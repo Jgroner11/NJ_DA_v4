@@ -60,9 +60,9 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 import umap_plots as plots
 from umap_plots import BACKGROUND
 
-DATA_DIR = Path('data') / 'alternation'
-EMB_DIR = DATA_DIR / 'embeddings'
-MAZE_PNG = Path('NPC4_2026_05_17_17_10_50_blackout.png')
+LABEL_DIR = Path('data') / 'binned_labels'
+EMB_DIR = Path('data') / 'embeddings'
+MAZE_PNG = Path('data') / 'raw' / 'NPC4_2026_05_17_17_10_50_blackout.png'
 PLOT_DIR = Path('figures')
 OUT_PATH = PLOT_DIR / 'patch_video.mp4'
 
@@ -298,10 +298,10 @@ def patch_spans():
     a boundary. The exact per-bin answer is patch_id_per_bin in
     embedding_and_labels.m, which is computed there but not currently exported.
     """
-    times = np.loadtxt(DATA_DIR / 'bin_times.csv')
+    times = np.loadtxt(LABEL_DIR / 'bin_times.csv')
 
     spans = []
-    for path in sorted(DATA_DIR.glob('patch_mask_*.csv'),
+    for path in sorted(LABEL_DIR.glob('patch_mask_*.csv'),
                        key=lambda p: int(p.stem.rsplit('_', 1)[1])):
         patch = int(path.stem.rsplit('_', 1)[1])
         bins = np.flatnonzero(np.loadtxt(path).astype(bool))
@@ -313,19 +313,19 @@ def patch_spans():
 
 def load_bins(patch):
     """Read the per-bin csvs this patch's video needs, and size the trail."""
-    times = np.loadtxt(DATA_DIR / 'bin_times.csv')
-    patch_mask = np.loadtxt(DATA_DIR / f'patch_mask_{patch}.csv').astype(bool)
+    times = np.loadtxt(LABEL_DIR / 'bin_times.csv')
+    patch_mask = np.loadtxt(LABEL_DIR / f'patch_mask_{patch}.csv').astype(bool)
 
     width = times[1] - times[0]
     trail_bins = round(TRAIL_S / width)
 
     return Bins(
         times=times,
-        trial_ids=np.loadtxt(DATA_DIR / 'trial_ids.csv'),
-        time_nearest_reward=np.loadtxt(DATA_DIR / 'time_nearest_reward.csv'),
-        reward_size_ms=np.loadtxt(DATA_DIR / 'reward_size_ms.csv'),
-        port_ids=np.loadtxt(DATA_DIR / 'port_ids.csv'),
-        head_xy=maze_pixels(np.loadtxt(DATA_DIR / 'head_positions.csv', delimiter=',')),
+        trial_ids=np.loadtxt(LABEL_DIR / 'trial_ids.csv'),
+        time_nearest_reward=np.loadtxt(LABEL_DIR / 'time_nearest_reward.csv'),
+        reward_size_ms=np.loadtxt(LABEL_DIR / 'reward_size_ms.csv'),
+        port_ids=np.loadtxt(LABEL_DIR / 'port_ids.csv'),
+        head_xy=maze_pixels(np.loadtxt(LABEL_DIR / 'head_positions.csv', delimiter=',')),
         patch_mask=patch_mask,
         full_row=np.arange(len(times)),
         patch_row=np.where(patch_mask, np.cumsum(patch_mask) - 1, -1),

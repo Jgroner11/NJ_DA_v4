@@ -2,7 +2,7 @@
 P = yaml.loadFile('parameters.yaml');
 
 if ~exist('data', 'var')
-    data = load(P.data_file);
+    data = load(fullfile('data', 'raw', P.data_file));
 end
 
 %% Extract
@@ -164,8 +164,9 @@ reward_size_nearest(~use_next & has_prev) = rs(prev_idx(~use_next & has_prev));
 
 
 %% Export all bins once, then one mask per patch
-if ~isfolder('data/alternation')
-    mkdir('data/alternation');
+label_dir = fullfile('data', 'binned_labels');
+if ~isfolder(label_dir)
+    mkdir(label_dir);
 end
 
 % correct and rewarded are not the same thing here: the session contains both
@@ -183,7 +184,7 @@ n_patches = max(patch_id_per_trial);
 % control and its default runs to ~15 significant digits, which bloats a matrix
 % this size, so this one is written with fprintf at 6 significant digits --
 % well beyond what smoothed, z-scored rates meaningfully carry.
-spikes_path = 'data/alternation/binned_spikes.csv';
+spikes_path = fullfile(label_dir, 'binned_spikes.csv');
 fid = fopen(spikes_path, 'w');
 assert(fid > 0, 'could not open %s for writing', spikes_path);
 fprintf(fid, [repmat('%.6g,', 1, n_bins - 1), '%.6g\n'], normalized_spikes.');
@@ -193,7 +194,7 @@ fclose(fid);
 % as the columns above. Left at full precision on purpose: these are absolute
 % session times, and 6 significant digits would start rounding the midpoint
 % away late in a long session.
-writematrix(bin_centers_sec.', 'data/alternation/bin_times.csv');
+writematrix(bin_centers_sec.', fullfile(label_dir, 'bin_times.csv'));
 
 % The session trial each bin belongs to, NaN in the gaps between trials, in the
 % same order again. SessionTrial rather than the row index discretize hands
@@ -201,18 +202,18 @@ writematrix(bin_centers_sec.', 'data/alternation/bin_times.csv');
 % SessionTrial is the number the experiment actually ran under.
 trial_id_per_bin_session = nan(size(trial_id_per_bin));
 trial_id_per_bin_session(in_trial) = trials.SessionTrial(trial_id_per_bin(in_trial));
-writematrix(trial_id_per_bin_session(:), 'data/alternation/trial_ids.csv');
+writematrix(trial_id_per_bin_session(:), fullfile(label_dir, 'trial_ids.csv'));
 
 % Signed seconds to the nearest reward, one row per bin, NaN where there is no
 % reward on either side. Written whole rather than per patch: it does not depend
 % on the patch, so the plotting side takes whichever subset it wants using the
 % same mask it uses for the spikes.
-writematrix(time_nearest_reward(:), 'data/alternation/time_nearest_reward.csv');
+writematrix(time_nearest_reward(:), fullfile(label_dir, 'time_nearest_reward.csv'));
 
 % Size in ms of whichever reward time_nearest_reward pairs with, one row per
 % bin, NaN under the same conditions time_nearest_reward is NaN. Also written
 % whole rather than per patch, for the same reason.
-writematrix(reward_size_nearest(:), 'data/alternation/reward_size_ms.csv');
+writematrix(reward_size_nearest(:), fullfile(label_dir, 'reward_size_ms.csv'));
 
 % One mask per patch, one row per bin, covering all n_bins. A patch with no
 % correct rewarded trials still gets an all-false mask, so patch numbering
@@ -222,7 +223,7 @@ for selected_patch = 1:n_patches
 
     fprintf('patch %d: %d bins\n', selected_patch, sum(keep_bin));
 
-    writematrix(uint8(keep_bin).', sprintf('data/alternation/patch_mask_%d.csv', selected_patch));
+    writematrix(uint8(keep_bin).', fullfile(label_dir, sprintf('patch_mask_%d.csv', selected_patch)));
 end
 
 
@@ -265,7 +266,7 @@ head_y_per_bin(~in_trial) = NaN;
 
 % One row per bin, [x, y] in DeepLabCut pixels, in the same order as
 % bin_times.csv and the columns of binned_spikes.csv.
-writematrix([head_x_per_bin(:), head_y_per_bin(:)], 'data/alternation/head_positions.csv');
+writematrix([head_x_per_bin(:), head_y_per_bin(:)], fullfile(label_dir, 'head_positions.csv'));
 
 
 %% Port positions, and which port each bin is at
@@ -341,4 +342,4 @@ for port = 1:n_ports
     fprintf('port %d: %d of %d trials lost\n', port, n_lost, sum(is_port_trial));
 end
 
-writematrix(port_per_bin, 'data/alternation/port_ids.csv');
+writematrix(port_per_bin, fullfile(label_dir, 'port_ids.csv'));

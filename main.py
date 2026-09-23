@@ -49,7 +49,7 @@ params = yaml.safe_load(Path('parameters.yaml').read_text())
 
 # The session's own length, read off the last bin rather than written down, so
 # a different recording needs no edit here.
-BIN_TIMES = np.loadtxt(video.DATA_DIR / 'bin_times.csv')
+BIN_TIMES = np.loadtxt(video.LABEL_DIR / 'bin_times.csv')
 
 # Clip lengths, named once: the sweep zips them against its start times and the
 # output folder is named after them, so the name cannot drift from what is in it.
@@ -65,7 +65,7 @@ CLIP_DIR = video.PLOT_DIR / ('full_session_'
 # selection has an all-false mask and can never win a window, but it is kept
 # here so the numbering matches the files on disk.
 PATCH_MASKS = {int(path.stem.rsplit('_', 1)[1]): np.loadtxt(path).astype(bool)
-               for path in video.DATA_DIR.glob('patch_mask_*.csv')}
+               for path in video.LABEL_DIR.glob('patch_mask_*.csv')}
 
 # When each patch runs, for the windows that hold no kept bins to fall back on.
 PATCH_SPANS = video.patch_spans()

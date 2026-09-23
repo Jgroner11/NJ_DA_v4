@@ -1,7 +1,7 @@
-"""UMAP embeddings of the alternation bins — the whole session and each patch.
+"""UMAP embeddings of the binned session — the whole session and each patch.
 
 Reads the CSVs written by embedding_and_labels.m and writes one .npy per embedding into
-data/alternation/embeddings/. No plotting: this only produces the embeddings.
+data/embeddings/. No plotting: this only produces the embeddings.
 
     umap_full.npy       (n_bins, n_components)      every bin, in file order
     umap_patch_<N>.npy  (n_kept, n_components)      the bins patch_mask_<N> selects
@@ -22,8 +22,8 @@ import numpy as np
 import pandas as pd
 import umap
 
-DATA_DIR = Path('data') / 'alternation'
-OUT_DIR = DATA_DIR / 'embeddings'
+LABEL_DIR = Path('data') / 'binned_labels'
+OUT_DIR = Path('data') / 'embeddings'
 CACHE_DIR = Path('.cache')
 
 UMAP_PARAMS = dict(
@@ -57,7 +57,7 @@ def load_spikes():
     UMAP's correlation metric cannot take a NaN, and failing loudly beats an
     embedding quietly built on garbage.
     """
-    path = DATA_DIR / 'binned_spikes.csv'
+    path = LABEL_DIR / 'binned_spikes.csv'
     if not path.exists():
         raise SystemExit(f'{path} not found — run embedding_and_labels.m first')
 
@@ -76,7 +76,7 @@ def load_spikes():
 def available_patches():
     """Patch numbers with a mask file present, read off the filenames."""
     found = []
-    for path in sorted(DATA_DIR.glob('patch_mask_*.csv')):
+    for path in sorted(LABEL_DIR.glob('patch_mask_*.csv')):
         match = re.fullmatch(r'patch_mask_(\d+)\.csv', path.name)
         if match:
             found.append(int(match.group(1)))
@@ -85,7 +85,7 @@ def available_patches():
 
 def load_mask(patch, n_bins):
     """One patch's 0/1 column as a boolean over all bins, with the file's digest."""
-    path = DATA_DIR / f'patch_mask_{patch}.csv'
+    path = LABEL_DIR / f'patch_mask_{patch}.csv'
     mask = pd.read_csv(path, header=None).to_numpy().ravel()
 
     if mask.shape[0] != n_bins:
@@ -131,7 +131,7 @@ print(f'{n_bins} bins x {n_units} units')
 
 patches = available_patches()
 if not patches:
-    print(f'no patch_mask_*.csv in {DATA_DIR} — embedding the full session only')
+    print(f'no patch_mask_*.csv in {LABEL_DIR} — embedding the full session only')
 
 # (output name, row selector, the part of the cache key that identifies the rows)
 targets = [('full', np.ones(n_bins, dtype=bool), 'full')]
