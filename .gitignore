@@ -1,0 +1,26 @@
+# Neuropixels recordings and other large .mat data — far over GitHub's 100 MB
+# file limit, so they live on disk / OneDrive rather than in the repo.
+*.mat
+data/
+figures/
+
+# MATLAB editor backups and build artifacts
+*.asv
+*.m~
+*.autosave
+slprj/
+codegen/
+
+# VSCode cache
+.vscode
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# UMAP fit cache, content-addressed and reproducible from the CSVs
+.cache/
+
+# Python bytecode, created once video.py imports umap_plots
+__pycache__/

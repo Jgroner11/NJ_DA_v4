@@ -1,0 +1,33 @@
+data_file: reduced_np_data_17_05_2026.mat
+bin_size_ms: 100
+sigma_bins: 2
+
+vid:
+  start_time_s: 4731.2
+  duration_s: 60
+  patch: 5
+  fps: 30
+  full_camera:
+    x: -1.910
+    y: 0.794
+    z: 1.106
+  patch_1_camera:
+    x: -0.505
+    y: -0.984
+    z: 1.861
+  patch_2_camera:
+    x: -0.229
+    y: 2.175
+    z: 0.845
+  patch_3_camera:
+    x: -0.455
+    y: -1.357
+    z: -1.858
+  patch_4_camera:
+    x: -1.553
+    y: -1.741
+    z: 0.232
+  patch_5_camera:
+    x: 1.952
+    y: -0.449
+    z: 1.219
