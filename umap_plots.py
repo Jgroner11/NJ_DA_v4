@@ -42,13 +42,8 @@ TIME_RADIUS = 3.0                                # seconds either side of a rewa
 UNLABELLED = '#d8d7d2'                           # bins outside that window
 COLORBAR_TITLE = 'seconds to nearest reward (- before, + after)'
 
-# One hue per port, assigned in port order and never cycled. The first four are
-# the ones the earlier alternation_plots.py used, where a patch only ever showed
-# two of them; the last four are added because a whole session visits all eight.
-# Eight categories is at the limit of what stays distinguishable, so the legend
-# is carrying real weight here rather than decorating.
-PORT_COLOURS = ['#1b8a4b', '#c9930a', '#7c4fb8', '#d1552f',
-                '#2a78d6', '#c2185b', '#00838f', '#6d4c41']
+# The port colours are not defined here: they live in parameters.yaml, shared
+# with behaviour_plot.m, and port_figure is handed them.
 NO_PORT_NAME = 'not at a port'
 
 
@@ -186,19 +181,21 @@ def show_category_legend(figure):
     return figure
 
 
-def port_figure(points, ports, title, camera, size):
+def port_figure(points, ports, colours, title, camera, size):
     """The cloud coloured by which port the mouse was at, 0 meaning none.
+
+    colours is the port_colors list from parameters.yaml, port 1 first, so port
+    p is drawn in colours[p - 1] and keeps its hue in every figure, including
+    the behaviour plot MATLAB draws from the same list.
 
     One trace per port rather than one trace with an array of colours, because
     that is what gives plotly a legend entry per port -- a categorical label has
-    no colorbar to explain it. Ports are drawn in numerical order, so a port
-    keeps its hue whichever figure it appears in, and the palette is never
-    cycled: too many ports is an error rather than two ports quietly sharing a
-    colour.
+    no colorbar to explain it. The palette is never cycled: a port with no
+    colour is an error rather than two ports quietly sharing one.
     """
     present = [int(p) for p in np.unique(ports) if p > 0]
-    assert len(present) <= len(PORT_COLOURS), (
-        f'{len(present)} ports but only {len(PORT_COLOURS)} colours defined -- '
+    assert max(present, default=0) <= len(colours), (
+        f'port {max(present)} but only {len(colours)} colours in parameters.yaml -- '
         'add more rather than letting them repeat')
 
     figure = go.Figure()
@@ -215,7 +212,7 @@ def port_figure(points, ports, title, camera, size):
         figure.add_trace(go.Scatter3d(
             x=points[at, 0], y=points[at, 1], z=points[at, 2],
             mode='markers',
-            marker=dict(size=BASE_SIZE * 2, color=PORT_COLOURS[port - 1]),
+            marker=dict(size=BASE_SIZE * 2, color=colours[port - 1]),
             name=f'port {port}', hoverinfo='skip',
         ))
 

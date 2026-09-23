@@ -409,7 +409,7 @@ def report_labels(labels, points, what):
           f'{what} bins within {plots.TIME_RADIUS:g} s of a reward')
 
 
-def render_layers(bins, cfg):
+def render_layers(bins, cfg, port_colours):
     """Every embedding rendered once, with the pixel map its trail needs.
 
     These are the only kaleido renders in the whole run: a background is built
@@ -471,10 +471,10 @@ def render_layers(bins, cfg):
     # tracked position -- so unlike the per-trial reward labels they mark only
     # the moments actually spent at a port.
     patch_ports = bins.port_ids[bins.patch_mask]
-    full_port_figure = plots.port_figure(full_points, bins.port_ids, FULL_TITLE,
-                                         full_camera, PANEL)
-    patch_port_figure = plots.port_figure(patch_points, patch_ports, patch_title,
-                                          patch_camera, PANEL)
+    full_port_figure = plots.port_figure(full_points, bins.port_ids, port_colours,
+                                         FULL_TITLE, full_camera, PANEL)
+    patch_port_figure = plots.port_figure(patch_points, patch_ports, port_colours,
+                                          patch_title, patch_camera, PANEL)
 
     print(f'{int((patch_ports > 0).sum())} of {len(patch_ports)} patch bins at a port; '
           f'{int((bins.port_ids > 0).sum())} of {len(bins.port_ids)} session bins')
@@ -755,7 +755,7 @@ def load_session(params):
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
     bins = load_bins(cfg['patch'])
-    layers = render_layers(bins, cfg)
+    layers = render_layers(bins, cfg, params['port_colors'])
     panels = build_panels(bins, layers, params['data_file'], cfg['patch'])
 
     return Session(cfg=cfg, bins=bins, layers=layers, panels=panels)

@@ -2,6 +2,20 @@ data_file: reduced_np_data_17_05_2026.mat
 bin_size_ms: 100
 sigma_bins: 2
 
+# One colour per port, port 1 first, in dark/light pairs so the two ports of a
+# rewarded pair share a hue. The one palette for every plot: behaviour_plot.m
+# and the UMAP port figures both read it from here. Quoted, because an unquoted
+# '#' starts a YAML comment.
+port_colors:
+  - '#CC4054'   # 1
+  - '#FF8C80'   # 2
+  - '#3373CC'   # 3
+  - '#8CBFFF'   # 4
+  - '#409959'   # 5
+  - '#A6CC8C'   # 6
+  - '#8C66B3'   # 7
+  - '#E699D9'   # 8
+
 vid:
   start_time_s: 4731.2
   duration_s: 60
