@@ -50,7 +50,6 @@ import os
 import re
 import threading
 from dataclasses import dataclass, fields
-from pathlib import Path
 
 import imageio.v2 as imageio
 import numpy as np
@@ -58,13 +57,8 @@ import plotly.colors as pc
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import umap_plots as plots
+from paths import session_paths
 from umap_plots import BACKGROUND
-
-LABEL_DIR = Path('data') / 'binned_labels'
-EMB_DIR = Path('data') / 'embeddings'
-MAZE_PNG = Path('data') / 'raw' / 'NPC4_2026_05_17_17_10_50_blackout.png'
-PLOT_DIR = Path('figures')
-OUT_PATH = PLOT_DIR / 'patch_video.mp4'
 
 COLUMNS = 4                                      # panels across
 ROWS = 3                                         # and down
@@ -109,7 +103,7 @@ def read_camera(cfg, key):
     Falls back to plotly's own default eye if parameters.yaml has no entry
     under `key` yet -- a new patch has nothing hand-tuned for it the first
     time it is rendered, and this is what lets that first render happen at
-    all, so its own umap_patch_N_uncolored.html can be orbited afterward to
+    all, so its own umap_patch_N_cr_uncolored.html can be orbited afterward to
     find a real angle and add it under `key`.
     """
     if key not in cfg:
@@ -127,7 +121,7 @@ def disc_offsets(radius):
     return dy[inside], dx[inside]
 
 
-def maze_geometry():
+def maze_geometry(maze_png):
     """How the blackout frame is laid into a panel: size on screen, and offset.
 
     Mirrors what ImageOps.pad does -- scale to fit preserving the aspect, then
@@ -136,7 +130,7 @@ def maze_geometry():
     rounding here is PIL's own, and // 2 in place of round() would sit a pixel
     off for some panel sizes.
     """
-    width, height = Image.open(MAZE_PNG).size
+    width, height = Image.open(maze_png).size
 
     if width > height:                        # the panel is square, so this is the test
         new_width, new_height = PANEL, round(height / width * PANEL)
@@ -147,7 +141,7 @@ def maze_geometry():
             round((PANEL - new_width) * 0.5), round((PANEL - new_height) * 0.5))
 
 
-def maze_pixels(positions):
+def maze_pixels(positions, maze_png):
     """Tracking coordinates mapped into the scaled-down maze panel.
 
     head_positions.csv is in pixels of the full-size blackout frame, and the
@@ -157,16 +151,16 @@ def maze_pixels(positions):
     (x + 0.5) * scale - 0.5. Checked against PIL's own output, this lands within
     0.02 px, where dropping those terms is out by up to half a pixel.
     """
-    width, height, new_width, new_height, offset_x, offset_y = maze_geometry()
+    width, height, new_width, new_height, offset_x, offset_y = maze_geometry(maze_png)
 
     x = (positions[:, 0] + 0.5) * (new_width / width) - 0.5 + offset_x
     y = (positions[:, 1] + 0.5) * (new_height / height) - 0.5 + offset_y
     return np.column_stack([x, y])
 
 
-def maze_image():
+def maze_image(maze_png):
     """The blackout frame, scaled to fit a panel and centred on it."""
-    image = Image.open(MAZE_PNG).convert('RGB')
+    image = Image.open(maze_png).convert('RGB')
     return np.asarray(ImageOps.pad(image, (PANEL, PANEL), color=BACKGROUND))
 
 
@@ -267,6 +261,10 @@ class Bins:
     For the full session that is the bin index itself; for a patch it is the
     bin's rank among the mask's set bins, and -1 for bins the patch does not
     contain.
+
+    patch_mask is the patch's correct rewarded bins -- the ones its _cr
+    embedding holds, and the only patch embedding the video shows -- and
+    patch_all_mask is every bin of the patch, gaps between trials included.
     """
     times: np.ndarray
     trial_ids: np.ndarray                        # NaN between trials
@@ -275,6 +273,7 @@ class Bins:
     port_ids: np.ndarray                         # 0 where not at a port
     head_xy: np.ndarray
     patch_mask: np.ndarray
+    patch_all_mask: np.ndarray
     full_row: np.ndarray
     patch_row: np.ndarray
     width: float                                 # seconds in one bin
@@ -282,51 +281,63 @@ class Bins:
     trail_rgb: np.ndarray                        # and its colour, newest first
 
 
-def patch_spans():
+def load_correct_rewarded(paths):
+    """correct_rewarded.csv: whether each bin is in a correct rewarded trial."""
+    return np.loadtxt(paths.label_dir / 'correct_rewarded.csv').astype(bool)
+
+
+def load_patch_id(paths):
+    """patch_id.csv: the patch each bin falls in, the gaps between trials included."""
+    return np.loadtxt(paths.label_dir / 'patch_id.csv')
+
+
+def patch_spans(paths):
     """When each patch runs, as (patch, first, last) in session seconds.
 
-    A patch is a run of trials sharing a CorrectBlock, so the patches tile the
-    session in order and never overlap -- which is what makes a span enough to
-    say which one a given moment belongs to. A patch whose trials were all
-    dropped in selection has an all-false mask and no span, so it is left out
-    here rather than handed back empty.
+    A patch is a run of trials sharing a CorrectBlock, and patch_id gives every
+    bin one -- the gaps between trials take the patch of the trial before them
+    -- so the spans tile the session in order and never overlap, which is what
+    makes a span enough to say which patch a given moment belongs to. They are
+    exact: first and last are the patch's own first and last bins.
 
-    The span is measured off the mask, and the mask holds only correct rewarded
-    bins, so the true patch starts a little before `first` and ends a little
-    after `last` -- by however much of its first and last trials were dropped.
-    Close enough to choose which embedding to render; not close enough to call
-    a boundary. The exact per-bin answer is patch_id_per_bin in
-    embedding_and_labels.m, which is computed there but not currently exported.
+    A patch with no correct rewarded bins is left out. Its _cr embedding cannot
+    be fitted, so there is nothing to render for it, and choosing it would only
+    fail on loading an embedding that does not exist.
     """
-    times = np.loadtxt(LABEL_DIR / 'bin_times.csv')
+    times = np.loadtxt(paths.label_dir / 'bin_times.csv')
+    correct_rewarded = load_correct_rewarded(paths)
+    patch_id = load_patch_id(paths)
 
     spans = []
-    for path in sorted(LABEL_DIR.glob('patch_mask_*.csv'),
-                       key=lambda p: int(p.stem.rsplit('_', 1)[1])):
-        patch = int(path.stem.rsplit('_', 1)[1])
-        bins = np.flatnonzero(np.loadtxt(path).astype(bool))
-        if bins.size:
-            spans.append((patch, times[bins[0]], times[bins[-1]]))
+    for patch in np.unique(patch_id[np.isfinite(patch_id)]).astype(int):
+        in_patch = patch_id == patch
+        if (in_patch & correct_rewarded).any():
+            bins = np.flatnonzero(in_patch)
+            spans.append((int(patch), times[bins[0]], times[bins[-1]]))
 
     return spans
 
 
-def load_bins(patch):
+def load_bins(patch, paths):
     """Read the per-bin csvs this patch's video needs, and size the trail."""
-    times = np.loadtxt(LABEL_DIR / 'bin_times.csv')
-    patch_mask = np.loadtxt(LABEL_DIR / f'patch_mask_{patch}.csv').astype(bool)
+    labels = paths.label_dir
+    times = np.loadtxt(labels / 'bin_times.csv')
+    patch_all_mask = load_patch_id(paths) == patch
+    patch_mask = load_correct_rewarded(paths) & patch_all_mask
 
     width = times[1] - times[0]
     trail_bins = round(TRAIL_S / width)
 
     return Bins(
         times=times,
-        trial_ids=np.loadtxt(LABEL_DIR / 'trial_ids.csv'),
-        time_nearest_reward=np.loadtxt(LABEL_DIR / 'time_nearest_reward.csv'),
-        reward_size_ms=np.loadtxt(LABEL_DIR / 'reward_size_ms.csv'),
-        port_ids=np.loadtxt(LABEL_DIR / 'port_ids.csv'),
-        head_xy=maze_pixels(np.loadtxt(LABEL_DIR / 'head_positions.csv', delimiter=',')),
+        trial_ids=np.loadtxt(labels / 'trial_ids.csv'),
+        time_nearest_reward=np.loadtxt(labels / 'time_nearest_reward.csv'),
+        reward_size_ms=np.loadtxt(labels / 'reward_size_ms.csv'),
+        port_ids=np.loadtxt(labels / 'port_ids.csv'),
+        head_xy=maze_pixels(np.loadtxt(labels / 'head_positions.csv', delimiter=','),
+                            paths.maze_png),
         patch_mask=patch_mask,
+        patch_all_mask=patch_all_mask,
         full_row=np.arange(len(times)),
         patch_row=np.where(patch_mask, np.cumsum(patch_mask) - 1, -1),
         width=width,
@@ -373,7 +384,8 @@ class Layer:
     the cloud landed in that rasterisation, and is None for the views that carry
     no trail -- see static_panel for why those cannot borrow a plain view's map.
     `camera_key` is the parameters.yaml entry a 3D view's readout reports, and
-    None for a flat projection, which has no camera to report.
+    None for a flat projection, which has no camera to report. `background` is
+    None for a view no panel shows, which is written out but never rasterised.
     """
     figure: object
     background: np.ndarray
@@ -384,7 +396,8 @@ class Layer:
 
 @dataclass
 class Layers:
-    """Every rendered view, in the order the panels read them."""
+    """Every view: the rendered ones in the order the panels read them, then the
+    ones only written out."""
     full: Layer
     patch: Layer
     full_coloured: Layer
@@ -395,6 +408,14 @@ class Layers:
     patch_xy_coloured: Layer
     full_ports: Layer
     patch_ports: Layer
+
+    # Written out as interactive plots only; no panel reads these yet.
+    correct_rewarded: Layer
+    correct_rewarded_coloured: Layer
+    correct_rewarded_ports: Layer
+    patch_all: Layer
+    patch_all_coloured: Layer
+    patch_all_ports: Layer
 
     def all(self):
         """Each layer once, in declaration order."""
@@ -409,7 +430,7 @@ def report_labels(labels, points, what):
           f'{what} bins within {plots.TIME_RADIUS:g} s of a reward')
 
 
-def render_layers(bins, cfg, port_colours):
+def render_layers(bins, cfg, port_colours, paths):
     """Every embedding rendered once, with the pixel map its trail needs.
 
     These are the only kaleido renders in the whole run: a background is built
@@ -422,12 +443,12 @@ def render_layers(bins, cfg, port_colours):
     """
     patch = cfg['patch']
     patch_title = f'Patch {patch}'
-    patch_camera_key = f'patch_{patch}_camera'
+    patch_camera_key = f'patch_{patch}_cr_camera'
     full_camera = read_camera(cfg, 'full_camera')
     patch_camera = read_camera(cfg, patch_camera_key)
 
-    full_points = np.load(EMB_DIR / 'umap_full.npy')
-    patch_points = np.load(EMB_DIR / f'umap_patch_{patch}.npy')
+    full_points = np.load(paths.emb_dir / 'umap_full.npy')
+    patch_points = np.load(paths.emb_dir / f'umap_patch_{patch}_cr.npy')
 
     full_figure, full_background, full_pixels = plots.panel_and_pixels(
         full_points, FULL_TITLE, full_camera, PANEL)
@@ -479,6 +500,36 @@ def render_layers(bins, cfg, port_colours):
     print(f'{int((patch_ports > 0).sum())} of {len(patch_ports)} patch bins at a port; '
           f'{int((bins.port_ids > 0).sum())} of {len(bins.port_ids)} session bins')
 
+    # The correct rewarded bins of every patch in one embedding, drawn three
+    # ways: plain, by reward time, and by port. Nothing here depends on the
+    # patch, so each patch's session builds the same three. No panel shows them
+    # yet, so they are built as figures and written out as interactive plots,
+    # but never rasterised: no kaleido render is spent on them. Their labels come
+    # out of the per-bin files under the same mask that selected the
+    # embedding's rows.
+    cr_mask = load_correct_rewarded(paths)
+    cr_points = np.load(paths.emb_dir / 'umap_correct_rewarded.npy')
+    cr_title = 'Correct rewarded, all patches'
+    cr_camera_key = 'correct_rewarded_camera'
+    cr_camera = read_camera(cfg, cr_camera_key)
+
+    cr_labels = bins.time_nearest_reward[cr_mask]
+    cr_ports = bins.port_ids[cr_mask]
+    report_labels(cr_labels, cr_points, 'correct rewarded')
+
+    # The whole of this patch -- every bin, gaps between trials included, not
+    # just its correct rewarded ones -- drawn the same three ways, and likewise
+    # written out only. Its own camera key, since its layout is its own fit and
+    # shares nothing with the _cr embedding's.
+    all_points = np.load(paths.emb_dir / f'umap_patch_{patch}_all.npy')
+    all_title = f'Patch {patch}, all bins'
+    all_camera_key = f'patch_{patch}_all_camera'
+    all_camera = read_camera(cfg, all_camera_key)
+
+    all_labels = bins.time_nearest_reward[bins.patch_all_mask]
+    all_ports = bins.port_ids[bins.patch_all_mask]
+    report_labels(all_labels, all_points, 'whole patch')
+
     # The coloured and port figures are rendered as well as written out, because
     # they are panels now. One more kaleido render each on a cold cache, nothing
     # on a warm one.
@@ -486,30 +537,48 @@ def render_layers(bins, cfg, port_colours):
         full=Layer(full_figure, full_background, full_pixels,
                    'umap_full', 'full_camera'),
         patch=Layer(patch_figure, patch_background, patch_pixels,
-                    f'umap_patch_{patch}_uncolored', patch_camera_key),
+                    f'umap_patch_{patch}_cr_uncolored', patch_camera_key),
         full_coloured=Layer(full_coloured,
                             plots.figure_image(full_coloured, PANEL),
                             name='umap_full_colored', camera_key='full_camera'),
         patch_coloured=Layer(patch_coloured,
                              plots.figure_image(patch_coloured, PANEL),
-                             name=f'umap_patch_{patch}_colored',
+                             name=f'umap_patch_{patch}_cr_colored',
                              camera_key=patch_camera_key),
         full_xy=Layer(full_xy, full_xy_background, full_xy_pixels,
                       'umap_full_xy_uncolored'),
         patch_xy=Layer(patch_xy, patch_xy_background, patch_xy_pixels,
-                       f'umap_patch_{patch}_xy_uncolored'),
+                       f'umap_patch_{patch}_cr_xy_uncolored'),
         full_xy_coloured=Layer(full_xy_coloured,
                                plots.figure_image(full_xy_coloured, PANEL),
                                name='umap_full_xy_colored'),
         patch_xy_coloured=Layer(patch_xy_coloured,
                                 plots.figure_image(patch_xy_coloured, PANEL),
-                                name=f'umap_patch_{patch}_xy_colored'),
+                                name=f'umap_patch_{patch}_cr_xy_colored'),
         full_ports=Layer(full_port_figure,
                          plots.figure_image(full_port_figure, PANEL),
                          name='umap_full_ports'),
         patch_ports=Layer(patch_port_figure,
                           plots.figure_image(patch_port_figure, PANEL),
-                          name=f'umap_patch_{patch}_ports'))
+                          name=f'umap_patch_{patch}_cr_ports'),
+        correct_rewarded=Layer(
+            plots.plain_figure(cr_points, cr_title, cr_camera, PANEL), None,
+            name='umap_correct_rewarded_uncolored', camera_key=cr_camera_key),
+        correct_rewarded_coloured=Layer(
+            plots.coloured_figure(cr_points, cr_labels, cr_title, cr_camera, PANEL), None,
+            name='umap_correct_rewarded_colored', camera_key=cr_camera_key),
+        correct_rewarded_ports=Layer(
+            plots.port_figure(cr_points, cr_ports, port_colours, cr_title, cr_camera, PANEL),
+            None, name='umap_correct_rewarded_ports'),
+        patch_all=Layer(
+            plots.plain_figure(all_points, all_title, all_camera, PANEL), None,
+            name=f'umap_patch_{patch}_all_uncolored', camera_key=all_camera_key),
+        patch_all_coloured=Layer(
+            plots.coloured_figure(all_points, all_labels, all_title, all_camera, PANEL), None,
+            name=f'umap_patch_{patch}_all_colored', camera_key=all_camera_key),
+        patch_all_ports=Layer(
+            plots.port_figure(all_points, all_ports, port_colours, all_title, all_camera, PANEL),
+            None, name=f'umap_patch_{patch}_all_ports'))
 
 
 # --------------------------------------------------------------------------
@@ -520,14 +589,14 @@ def render_layers(bins, cfg, port_colours):
 # function of the frame time, so the per-frame path holds nothing but the
 # painting itself.
 
-def maze_panel(bins):
+def maze_panel(bins, maze_png):
     """Panel 11: the maze, with the mouse's position and its recent trail.
 
     Drawn on a copy, so the trail lasts one frame instead of accumulating, and
     oldest first so the current position sits on top where dots overlap. Bins
     with no tracked position are skipped, leaving a gap in the trail.
     """
-    maze = maze_image()
+    maze = maze_image(maze_png)
     dot_dy, dot_dx = disc_offsets(DOT_RADIUS)
 
     def draw(time_s):
@@ -643,7 +712,7 @@ def info_panel(bins, data_file, patch):
     return draw
 
 
-def build_panels(bins, layers, data_file, patch):
+def build_panels(bins, layers, data_file, patch, maze_png):
     """The grid, row-major from 1 in the top left, as functions of the frame time.
 
     The placeholder fallback goes unused while all twelve are filled; it is what
@@ -660,7 +729,7 @@ def build_panels(bins, layers, data_file, patch):
         8: static_panel(layers.patch_xy_coloured.background),
         9: static_panel(layers.full_ports.background),
         10: static_panel(layers.patch_ports.background),
-        11: maze_panel(bins),
+        11: maze_panel(bins, maze_png),
         12: info_panel(bins, data_file, patch),
     }
     return [live[n] if n in live else placeholder(n)
@@ -728,6 +797,7 @@ class _SuppressBenignFfmpegWarning:
 class Session:
     """One run's worth of loaded data and rendered backgrounds."""
     cfg: dict
+    paths: object                                # paths.SessionPaths
     bins: Bins
     layers: Layers
     panels: list
@@ -748,33 +818,41 @@ def load_session(params):
     hands back is enough for write_video to work in numpy alone.
     """
     cfg = params['vid']
+    paths = session_paths(params)
 
     width, height = frame_size()
     print(f'frame {width}x{height}: {COLUMNS}x{ROWS} panels of {PANEL}x{PANEL}')
 
-    PLOT_DIR.mkdir(parents=True, exist_ok=True)
+    bins = load_bins(cfg['patch'], paths)
+    layers = render_layers(bins, cfg, params['port_colors'], paths)
+    panels = build_panels(bins, layers, params['data_file'], cfg['patch'],
+                          paths.maze_png)
 
-    bins = load_bins(cfg['patch'])
-    layers = render_layers(bins, cfg, params['port_colors'])
-    panels = build_panels(bins, layers, params['data_file'], cfg['patch'])
-
-    return Session(cfg=cfg, bins=bins, layers=layers, panels=panels)
+    return Session(cfg=cfg, paths=paths, bins=bins, layers=layers, panels=panels)
 
 
 def write_interactive_plots(session):
-    """Every rendered embedding saved as an html plot beside the video.
+    """Every rendered embedding saved as an html plot, in the session's umap folder.
 
     Orbit a 3D one by hand and the readout in its corner names the camera
     position to paste into parameters.yaml.
     """
+    session.paths.umap_dir.mkdir(parents=True, exist_ok=True)
     for layer in session.layers.all():
-        path = PLOT_DIR / f'{layer.name}.html'
+        path = session.paths.umap_dir / f'{layer.name}.html'
         print(f'wrote {plots.write_html(layer.figure, path, layer.camera_key, CAMERA_ZOOM)}')
 
 
-def write_video(session, out_path=OUT_PATH):
-    """Paint the trail onto the cached backgrounds, frame by frame, and encode."""
+def write_video(session, out_path=None):
+    """Paint the trail onto the cached backgrounds, frame by frame, and encode.
+
+    Without an out_path, the video lands as patch_video.mp4 in the session's
+    figures folder.
+    """
     cfg, bins = session.cfg, session.bins
+    if out_path is None:
+        session.paths.fig_dir.mkdir(parents=True, exist_ok=True)
+        out_path = session.paths.fig_dir / 'patch_video.mp4'
     start, duration, fps = cfg['start_time_s'], cfg['duration_s'], cfg['fps']
 
     in_window = (bins.times >= start) & (bins.times < start + duration)

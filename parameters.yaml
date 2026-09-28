@@ -1,4 +1,8 @@
-data_file: reduced_np_data_17_05_2026.mat
+# The session every script works on, and its blackout frame, both in data/raw/.
+# Everything derived from it is kept under data/<stem>/ and figures/<stem>/, so
+# switching session is a matter of changing these two lines -- see paths.py.
+data_file: reduced_np_data_25_05_2026.mat
+maze_png: NPC4_2026_05_25_15_42_57_blackout.png
 bin_size_ms: 100
 sigma_bins: 2
 
@@ -25,23 +29,23 @@ vid:
     x: -1.910
     y: 0.794
     z: 1.106
-  patch_1_camera:
+  patch_1_cr_camera:
     x: -0.505
     y: -0.984
     z: 1.861
-  patch_2_camera:
+  patch_2_cr_camera:
     x: -0.229
     y: 2.175
     z: 0.845
-  patch_3_camera:
+  patch_3_cr_camera:
     x: -0.455
     y: -1.357
     z: -1.858
-  patch_4_camera:
+  patch_4_cr_camera:
     x: -1.553
     y: -1.741
     z: 0.232
-  patch_5_camera:
+  patch_5_cr_camera:
     x: 1.952
     y: -0.449
     z: 1.219

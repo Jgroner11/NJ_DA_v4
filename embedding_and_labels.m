@@ -1,9 +1,13 @@
 %% Load data (run once)
 P = yaml.loadFile('parameters.yaml');
 
-if ~exist('data', 'var')
+% Reloaded when data_file changes, so switching session cannot silently reuse
+% the last one's data left in the workspace.
+if ~exist('data', 'var') || ~exist('loaded_file', 'var') || loaded_file ~= P.data_file
     data = load(fullfile('data', 'raw', P.data_file));
+    loaded_file = P.data_file;
 end
+[~, session] = fileparts(P.data_file);
 
 %% Extract
 np_data_reduced = data.np_data_reduced;
@@ -49,9 +53,14 @@ patch_id_per_bin(in_trial) = patch_id_per_trial(trial_id_per_bin(in_trial));
 % Bins tile the session end to end, but trials do not: consecutive trials are
 % separated by the inter-trial interval, and any trial dropped in selection
 % leaves a hole the width of that whole trial. Bins landing in those gaps have
-% no trial, and so no patch, and are excluded from every mask below.
+% no trial of their own, so they take the patch of the trial before them: a
+% patch then runs from its first trial's start to the next patch's first
+% trial's start, covering every bin of the session between the two. Bins
+% before the first trial, if there are any, take the first trial's patch.
+% They still have no trial, so the correct rewarded filter below excludes them.
 fprintf('%d of %d bins fall outside any trial (%.1f%%)\n', ...
     sum(~in_trial), n_bins, 100 * mean(~in_trial));
+patch_id_per_bin = fillmissing(fillmissing(patch_id_per_bin, 'previous'), 'next');
 
 units_filtered = units(ismember(units.group, {'good', 'mua'}), :);
 n_units = height(units_filtered);
@@ -163,8 +172,9 @@ reward_size_nearest(use_next & has_next)  = rs(next_idx(use_next & has_next));
 reward_size_nearest(~use_next & has_prev) = rs(prev_idx(~use_next & has_prev));
 
 
-%% Export all bins once, then one mask per patch
-label_dir = fullfile('data', 'binned_labels');
+%% Export every bin, with its patch and whether it is correct rewarded
+% Under the session's own folder, as paths.py expects.
+label_dir = fullfile('data', session, 'binned_labels');
 if ~isfolder(label_dir)
     mkdir(label_dir);
 end
@@ -177,10 +187,8 @@ trial_is_kept = trials.Correctness == "correct" & trials.Rewarded == "rewarded";
 keep_trial_bin = false(size(bin_centers_sec));
 keep_trial_bin(in_trial) = trial_is_kept(trial_id_per_bin(in_trial));
 
-n_patches = max(patch_id_per_trial);
-
 % Every bin, unfiltered: units down the rows, bins across the columns. The
-% per-patch masks below index into these columns. writematrix has no precision
+% per-bin labels below index into these columns. writematrix has no precision
 % control and its default runs to ~15 significant digits, which bloats a matrix
 % this size, so this one is written with fprintf at 6 significant digits --
 % well beyond what smoothed, z-scored rates meaningfully carry.
@@ -215,15 +223,19 @@ writematrix(time_nearest_reward(:), fullfile(label_dir, 'time_nearest_reward.csv
 % whole rather than per patch, for the same reason.
 writematrix(reward_size_nearest(:), fullfile(label_dir, 'reward_size_ms.csv'));
 
-% One mask per patch, one row per bin, covering all n_bins. A patch with no
-% correct rewarded trials still gets an all-false mask, so patch numbering
-% stays contiguous and nothing downstream has to cope with a missing file.
-for selected_patch = 1:n_patches
-    keep_bin = keep_trial_bin & patch_id_per_bin == selected_patch;   % NaN fails the test
+% The two per-bin files every embedding's selection is made from, one row per
+% bin. correct_rewarded is 1 for a bin inside a trial that was both correct and
+% rewarded; patch_id is the patch every bin falls in, gaps included. Patch N's
+% correct rewarded bins are correct_rewarded & patch_id == N, and all of patch
+% N is patch_id == N, so the Python side builds each selection itself rather
+% than reading a file per patch.
+writematrix(uint8(keep_trial_bin).', fullfile(label_dir, 'correct_rewarded.csv'));
+writematrix(patch_id_per_bin(:), fullfile(label_dir, 'patch_id.csv'));
 
-    fprintf('patch %d: %d bins\n', selected_patch, sum(keep_bin));
-
-    writematrix(uint8(keep_bin).', fullfile(label_dir, sprintf('patch_mask_%d.csv', selected_patch)));
+for selected_patch = 1:max(patch_id_per_bin)
+    in_patch = patch_id_per_bin == selected_patch;
+    fprintf('patch %d: %d bins, %d correct rewarded\n', selected_patch, ...
+        sum(in_patch), sum(in_patch & keep_trial_bin));
 end
 
 

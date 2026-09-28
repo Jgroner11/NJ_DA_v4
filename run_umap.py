@@ -1,13 +1,20 @@
-"""UMAP embeddings of the binned session — the whole session and each patch.
+"""UMAP embeddings of the binned session — the whole session, its correct
+rewarded bins, and each patch both filtered that way and whole.
 
 Reads the CSVs written by embedding_and_labels.m and writes one .npy per embedding into
-data/embeddings/. No plotting: this only produces the embeddings.
+data/<session>/embeddings/, for the session parameters.yaml names -- see
+paths.py. No plotting: this only produces the embeddings.
 
-    umap_full.npy       (n_bins, n_components)      every bin, in file order
-    umap_patch_<N>.npy  (n_kept, n_components)      the bins patch_mask_<N> selects
+    umap_full.npy              (n_bins, n_components)   every bin, in file order
+    umap_correct_rewarded.npy  (n_kept, n_components)   correct_rewarded
+    umap_patch_<N>_cr.npy      (n_kept, n_components)   correct_rewarded & patch_id == N
+    umap_patch_<N>_all.npy     (n_kept, n_components)   patch_id == N
 
-A patch embedding's row i is the i-th True entry of that patch's mask, so the
-matching times and positions are bin_times.csv[mask] and head_positions.csv[mask].
+Every selection is made from two per-bin columns, correct_rewarded.csv (0/1)
+and patch_id.csv (the patch each bin falls in, the gaps between trials
+included) -- see selections(). A masked embedding's row i is the i-th True
+entry of its mask, so the matching times and positions are bin_times.csv[mask]
+and head_positions.csv[mask].
 
 Fits are cached by content, so re-running does not refit anything whose inputs
 and parameters are unchanged. UMAP is not seeded here, so the cache is also what
@@ -15,15 +22,18 @@ keeps an embedding stable from run to run — delete .cache/ to force fresh fits
 """
 
 import hashlib
-import re
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import umap
+import yaml
 
-LABEL_DIR = Path('data') / 'binned_labels'
-OUT_DIR = Path('data') / 'embeddings'
+from paths import session_paths
+
+PATHS = session_paths(yaml.safe_load(Path('parameters.yaml').read_text()))
+LABEL_DIR = PATHS.label_dir
+OUT_DIR = PATHS.emb_dir
 CACHE_DIR = Path('.cache')
 
 UMAP_PARAMS = dict(
@@ -34,10 +44,11 @@ UMAP_PARAMS = dict(
     metric='correlation',
 )
 
-# Patches smaller than this are skipped. Below n_neighbors, UMAP silently
+# Selections smaller than this are skipped. Below n_neighbors, UMAP silently
 # truncates the neighbourhood to the sample count and every point becomes every
-# other point's neighbour, so the layout stops reflecting the data. Patches with
-# no correct rewarded trials get an all-false mask and land here too.
+# other point's neighbour, so the layout stops reflecting the data. A patch with
+# no correct rewarded trials selects nothing for its _cr embedding and lands
+# here too.
 MIN_BINS = 5 * UMAP_PARAMS['n_neighbors']
 
 
@@ -73,38 +84,65 @@ def load_spikes():
     return spikes, file_digest(path)
 
 
-def available_patches():
-    """Patch numbers with a mask file present, read off the filenames."""
-    found = []
-    for path in sorted(LABEL_DIR.glob('patch_mask_*.csv')):
-        match = re.fullmatch(r'patch_mask_(\d+)\.csv', path.name)
-        if match:
-            found.append(int(match.group(1)))
-    return sorted(found)
+def load_column(name, n_bins):
+    """One per-bin CSV as a flat array, checked against the spikes' bin count."""
+    path = LABEL_DIR / name
+    if not path.exists():
+        raise SystemExit(f'{path} not found — run embedding_and_labels.m first')
 
+    column = pd.read_csv(path, header=None).to_numpy().ravel()
 
-def load_mask(patch, n_bins):
-    """One patch's 0/1 column as a boolean over all bins, with the file's digest."""
-    path = LABEL_DIR / f'patch_mask_{patch}.csv'
-    mask = pd.read_csv(path, header=None).to_numpy().ravel()
-
-    if mask.shape[0] != n_bins:
+    if column.shape[0] != n_bins:
         raise SystemExit(
-            f'{path.name}: {mask.shape[0]} rows but binned_spikes.csv has {n_bins} '
+            f'{path.name}: {column.shape[0]} rows but binned_spikes.csv has {n_bins} '
             'bins — the two CSVs are from different runs of embedding_and_labels.m'
         )
 
-    return mask.astype(bool), file_digest(path)
+    return column
+
+
+def mask_digest(mask):
+    """A digest of exactly which bins a mask selects.
+
+    Taken over the mask written out one 0 or 1 per line with Windows line
+    endings -- byte for byte what the per-patch mask files embedding_and_labels.m
+    used to write held. A patch's correct rewarded selection therefore keys the
+    cache exactly as its old mask file did, and the fits made from those files
+    are found again rather than refitted. That matters because UMAP is not
+    seeded: a refit would give the patch a new layout, and the camera tuned for
+    it in parameters.yaml would no longer suit.
+    """
+    return hashlib.sha256(b''.join(np.where(mask, b'1\r\n', b'0\r\n'))).hexdigest()
+
+
+def selections(n_bins):
+    """(output name, row mask) for every masked embedding, from the two columns.
+
+    Patch N's correct rewarded bins are correct_rewarded & patch_id == N, and
+    the whole of patch N is patch_id == N. Every bin has a patch -- the gaps
+    between trials take the patch of the trial before them -- but only bins
+    inside a correct rewarded trial are correct_rewarded, so the _cr selections
+    hold no gap bins and the _all ones do.
+    """
+    correct_rewarded = load_column('correct_rewarded.csv', n_bins).astype(bool)
+    patch_id = load_column('patch_id.csv', n_bins)
+
+    found = [('correct_rewarded', correct_rewarded)]
+    for patch in np.unique(patch_id[np.isfinite(patch_id)]).astype(int):
+        in_patch = patch_id == patch
+        found.append((f'patch_{patch}_cr', correct_rewarded & in_patch))
+        found.append((f'patch_{patch}_all', in_patch))
+    return found
 
 
 def embedding_for(rows, key_source):
     """Fit UMAP on these rows, or reuse a cached fit of the same inputs.
 
-    The key covers the spikes file's contents, whatever selected the rows (a
-    mask file's contents, or the word 'full'), and every UMAP parameter. A
-    re-export, a different patch, or an edited parameter therefore all miss the
-    cache rather than quietly returning a stale or unrelated embedding. Keys are
-    content-addressed, so patches never collide with each other or with any
+    The key covers the spikes file's contents, which rows were selected (the
+    mask's digest, or the word 'full'), and every UMAP parameter. A re-export,
+    a different selection, or an edited parameter therefore all miss the cache
+    rather than quietly returning a stale or unrelated embedding. Keys are
+    content-addressed, so selections never collide with each other or with any
     other script sharing .cache/.
     """
     key = hashlib.sha256(
@@ -129,15 +167,9 @@ spikes, spikes_digest = load_spikes()
 n_bins, n_units = spikes.shape
 print(f'{n_bins} bins x {n_units} units')
 
-patches = available_patches()
-if not patches:
-    print(f'no patch_mask_*.csv in {LABEL_DIR} — embedding the full session only')
-
 # (output name, row selector, the part of the cache key that identifies the rows)
 targets = [('full', np.ones(n_bins, dtype=bool), 'full')]
-for patch in patches:
-    mask, mask_digest = load_mask(patch, n_bins)
-    targets.append((f'patch_{patch}', mask, mask_digest))
+targets += [(name, mask, mask_digest(mask)) for name, mask in selections(n_bins)]
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 

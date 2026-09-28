@@ -1,9 +1,13 @@
 %% Load data (run once)
 P = yaml.loadFile('parameters.yaml');
 
-if ~exist('data', 'var')
+% Reloaded when data_file changes, so switching session cannot silently reuse
+% the last one's data left in the workspace.
+if ~exist('data', 'var') || ~exist('loaded_file', 'var') || loaded_file ~= P.data_file
     data = load(fullfile('data', 'raw', P.data_file));
+    loaded_file = P.data_file;
 end
+[~, session] = fileparts(P.data_file);
 
 %% Extract
 np_data_reduced = data.np_data_reduced;
@@ -21,14 +25,13 @@ metadata = np_data_reduced.metadata;
 % into any Color property.
 port_colors = string(P.port_colors);
 
-% Named for the session, as main.py names its clip folder, so plots of
-% different recordings sit side by side in figures/ rather than overwriting.
-[~, session] = fileparts(P.data_file);
-fig_name = "behaviour_" + session;   % a string: yaml.loadFile returns strings, and [] would make a 1x2 array
+% Saved in the session's own figures folder, as paths.py lays it out, so plots
+% of different recordings sit side by side rather than overwriting.
+fig_dir = fullfile('figures', session);
 
 % A fixed size in pixels, so the saved PNG comes out the same on every machine,
 % and everything placed below can be placed in pixels too -- see Legends.
-fig = figure('Name', fig_name, 'Units', 'pixels');
+fig = figure('Name', "behaviour_" + session, 'Units', 'pixels');
 fig.Position(3:4) = [1200 700];
 theme(fig, 'light');   % R2025a+ follows the desktop's dark theme otherwise, into the saved PNG too
 
@@ -218,9 +221,9 @@ line_key.Position(1) = patch_key.Position(1);
 line_key.Position(2) = patch_key.Position(2) - legend_gap - line_key.Position(4);
 
 %% Save
-if ~isfolder('figures')
-    mkdir('figures');
+if ~isfolder(fig_dir)
+    mkdir(fig_dir);
 end
-exportgraphics(fig, fullfile('figures', fig_name + ".png"));
+exportgraphics(fig, fullfile(fig_dir, 'behaviour.png'));
 
 

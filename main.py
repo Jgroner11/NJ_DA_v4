@@ -12,7 +12,7 @@ start_time_s, duration_s and patch written in the file are only what a single
 hand-run would have used, and are overwritten here.
 
 Every window is rendered, including the stretches where the mouse was getting
-the task wrong. Those hold no bins in any patch mask, so the patch panels draw
+the task wrong. Those hold no correct rewarded bins, so the patch panels draw
 their cloud as usual but carry no trail across it, and the information panel
 reads "excluded" the whole way through, while the maze and the whole-session
 embedding are trailed as normal -- which is the point: it is the incorrect
@@ -21,10 +21,11 @@ trajectories that are worth watching.
 Each clip is otherwise rendered against the patch that owns most of its bins --
 see get_patch -- which is not always the patch its start time falls in.
 
-The clips land together in one folder named for the sweep and the session, so a
-second sweep at other lengths sits beside the first rather than mixing into it.
-The interactive plots stay in figures/ alongside, one set per patch rather than
-one per clip.
+Everything lands under figures/<session>/ -- see paths.py. The clips go into
+clips/, in one folder named for the sweep, so a second sweep at other lengths
+sits beside the first rather than mixing into it. The interactive plots go into
+umap/, one set per patch rather than one per clip, and all of them are written
+before the first clip is rendered.
 """
 
 import argparse
@@ -35,6 +36,7 @@ import numpy as np
 import yaml
 
 import video
+from paths import session_paths
 
 parser = argparse.ArgumentParser(
     description='Sweep the session and build clips. With --end, only clips '
@@ -46,39 +48,40 @@ parser.add_argument('--end', type=float, default=None,
 args = parser.parse_args()
 
 params = yaml.safe_load(Path('parameters.yaml').read_text())
+PATHS = session_paths(params)
 
 # The session's own length, read off the last bin rather than written down, so
 # a different recording needs no edit here.
-BIN_TIMES = np.loadtxt(video.LABEL_DIR / 'bin_times.csv')
+BIN_TIMES = np.loadtxt(PATHS.label_dir / 'bin_times.csv')
 
 # Clip lengths, named once: the sweep zips them against its start times and the
 # output folder is named after them, so the name cannot drift from what is in it.
+# The session is already in the path, as the folder the clips folder sits in.
 DURATIONS = (30, 60, 120)
 
-# All the clips of one sweep together, under the session they came from. The
-# session is the data file, which is what the information panel calls it too.
-CLIP_DIR = video.PLOT_DIR / ('full_session_'
-                             + '-'.join(str(d) for d in DURATIONS)
-                             + '_' + Path(params['data_file']).stem)
+# All the clips of one sweep together, under the session they came from.
+CLIP_DIR = PATHS.clip_dir / ('full_session_' + '-'.join(str(d) for d in DURATIONS))
 
-# Every patch's mask, read once. A patch whose trials were all dropped in
-# selection has an all-false mask and can never win a window, but it is kept
-# here so the numbering matches the files on disk.
-PATCH_MASKS = {int(path.stem.rsplit('_', 1)[1]): np.loadtxt(path).astype(bool)
-               for path in video.LABEL_DIR.glob('patch_mask_*.csv')}
+# Every patch's correct rewarded bins, built once from the two per-bin columns:
+# the bins its _cr embedding holds, and so the ones that decide a window. A patch
+# with no correct rewarded trials gets an all-false mask and can never win one.
+_CORRECT_REWARDED = video.load_correct_rewarded(PATHS)
+_PATCH_ID = video.load_patch_id(PATHS)
+PATCH_MASKS = {int(patch): _CORRECT_REWARDED & (_PATCH_ID == patch)
+               for patch in np.unique(_PATCH_ID[np.isfinite(_PATCH_ID)])}
 
 # When each patch runs, for the windows that hold no kept bins to fall back on.
-PATCH_SPANS = video.patch_spans()
+PATCH_SPANS = video.patch_spans(PATHS)
 
 
 def nearest_patch(time_s):
     """The patch running at this moment, or the closest one if none is.
 
-    Distance is zero anywhere inside a patch's span, so this only has to choose
-    between patches for a moment that falls between two -- or before the first,
-    which the start of the session does: patch 1's block opens on trial 1 at
-    0 s, but its span is measured from its first correct rewarded bin at 80 s,
-    because the mouse got the first five trials wrong.
+    Distance is zero anywhere inside a patch's span, and the spans are exact
+    and tile the session, so this is simply the patch running at that moment --
+    unless that patch has no correct rewarded bins, and so no embedding to
+    render. patch_spans leaves such a patch out, and a moment inside it falls to
+    whichever neighbouring patch is nearest in time.
     """
     def distance(span):
         _, first, last = span
@@ -124,8 +127,19 @@ def get_patch(start_time_s, duration_s):
 # One session per patch, kept and reused. Nothing load_session builds depends on
 # the window -- only on the patch -- so rebuilding it per clip would re-render
 # ten plotly figures to no effect. session.cfg is params['vid'] itself, the same
-# dict object, so moving the window is a matter of writing to it between calls.
+# dict object, so moving the window is a matter of writing to it between calls;
+# the patch is only read while a session loads, so sharing it is safe.
+#
+# Every session is loaded, and its interactive plots written, before the first
+# clip, so the plots are all on disk within minutes even when the sweep is
+# stopped early. The patches are exactly those in PATCH_SPANS: the ones with
+# correct rewarded bins, and so the only ones get_patch can return. --end does
+# not trim this, since it limits clips, not plots.
 sessions = {}
+for patch, _, _ in PATCH_SPANS:
+    params['vid']['patch'] = patch
+    sessions[patch] = video.load_session(params)
+    video.write_interactive_plots(sessions[patch])
 
 CLIP_DIR.mkdir(parents=True, exist_ok=True)
 print(f'writing clips to {CLIP_DIR}')
@@ -136,11 +150,6 @@ for t in range(0, round(BIN_TIMES[-1]), 210):
             continue
 
         patch = get_patch(start_time, movie_duration)
-
-        if patch not in sessions:
-            params['vid']['patch'] = patch
-            sessions[patch] = video.load_session(params)
-            video.write_interactive_plots(sessions[patch])
         session = sessions[patch]
 
         session.cfg['start_time_s'] = start_time
