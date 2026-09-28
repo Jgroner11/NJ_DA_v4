@@ -1,5 +1,5 @@
 """UMAP embeddings of the binned session — the whole session, its correct
-rewarded bins, and each patch both filtered that way and whole.
+rewarded bins, and each block both filtered that way and whole.
 
 Reads the CSVs written by embedding_and_labels.m and writes one .npy per embedding into
 data/<session>/embeddings/, for the session parameters.yaml names -- see
@@ -7,11 +7,11 @@ paths.py. No plotting: this only produces the embeddings.
 
     umap_full.npy              (n_bins, n_components)   every bin, in file order
     umap_correct_rewarded.npy  (n_kept, n_components)   correct_rewarded
-    umap_patch_<N>_cr.npy      (n_kept, n_components)   correct_rewarded & patch_id == N
-    umap_patch_<N>_all.npy     (n_kept, n_components)   patch_id == N
+    umap_block_<N>_cr.npy      (n_kept, n_components)   correct_rewarded & block_id == N
+    umap_block_<N>_all.npy     (n_kept, n_components)   block_id == N
 
-Every selection is made from two per-bin columns, correct_rewarded.csv (0/1)
-and patch_id.csv (the patch each bin falls in, the gaps between trials
+Every selection is made from three per-bin columns, correct.csv and rewarded.csv
+(0/1, combined here into correct_rewarded) and block_id.csv (the block each bin falls in, the gaps between trials
 included) -- see selections(). A masked embedding's row i is the i-th True
 entry of its mask, so the matching times and positions are bin_times.csv[mask]
 and head_positions.csv[mask].
@@ -46,7 +46,7 @@ UMAP_PARAMS = dict(
 
 # Selections smaller than this are skipped. Below n_neighbors, UMAP silently
 # truncates the neighbourhood to the sample count and every point becomes every
-# other point's neighbour, so the layout stops reflecting the data. A patch with
+# other point's neighbour, so the layout stops reflecting the data. A block with
 # no correct rewarded trials selects nothing for its _cr embedding and lands
 # here too.
 MIN_BINS = 5 * UMAP_PARAMS['n_neighbors']
@@ -105,33 +105,34 @@ def mask_digest(mask):
     """A digest of exactly which bins a mask selects.
 
     Taken over the mask written out one 0 or 1 per line with Windows line
-    endings -- byte for byte what the per-patch mask files embedding_and_labels.m
-    used to write held. A patch's correct rewarded selection therefore keys the
+    endings -- byte for byte what the per-block mask files embedding_and_labels.m
+    used to write held. A block's correct rewarded selection therefore keys the
     cache exactly as its old mask file did, and the fits made from those files
     are found again rather than refitted. That matters because UMAP is not
-    seeded: a refit would give the patch a new layout, and the camera tuned for
+    seeded: a refit would give the block a new layout, and the camera tuned for
     it in parameters.yaml would no longer suit.
     """
     return hashlib.sha256(b''.join(np.where(mask, b'1\r\n', b'0\r\n'))).hexdigest()
 
 
 def selections(n_bins):
-    """(output name, row mask) for every masked embedding, from the two columns.
+    """(output name, row mask) for every masked embedding, from the label columns.
 
-    Patch N's correct rewarded bins are correct_rewarded & patch_id == N, and
-    the whole of patch N is patch_id == N. Every bin has a patch -- the gaps
-    between trials take the patch of the trial before them -- but only bins
+    Block N's correct rewarded bins are correct_rewarded & block_id == N, and
+    the whole of block N is block_id == N. Every bin has a block -- the gaps
+    between trials take the block of the trial before them -- but only bins
     inside a correct rewarded trial are correct_rewarded, so the _cr selections
     hold no gap bins and the _all ones do.
     """
-    correct_rewarded = load_column('correct_rewarded.csv', n_bins).astype(bool)
-    patch_id = load_column('patch_id.csv', n_bins)
+    correct_rewarded = (load_column('correct.csv', n_bins).astype(bool)
+                        & load_column('rewarded.csv', n_bins).astype(bool))
+    block_id = load_column('block_id.csv', n_bins)
 
     found = [('correct_rewarded', correct_rewarded)]
-    for patch in np.unique(patch_id[np.isfinite(patch_id)]).astype(int):
-        in_patch = patch_id == patch
-        found.append((f'patch_{patch}_cr', correct_rewarded & in_patch))
-        found.append((f'patch_{patch}_all', in_patch))
+    for block in np.unique(block_id[np.isfinite(block_id)]).astype(int):
+        in_block = block_id == block
+        found.append((f'block_{block}_cr', correct_rewarded & in_block))
+        found.append((f'block_{block}_all', in_block))
     return found
 
 

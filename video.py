@@ -1,12 +1,12 @@
 """Twelve-panel video: a 4x3 grid, every panel live.
 
 Twelve panels, four across and three down, numbered row-major from 1 in the top
-left. Odd columns hold the whole session and even columns the selected patch, so
+left. Odd columns hold the whole session and even columns the selected block, so
 each pair sits side by side and the two are read together:
 
-     1 full 3D     2 patch 3D     3 full xy     4 patch xy      plain, with trail
-     5 full 3D     6 patch 3D     7 full xy     8 patch xy      by reward time
-     9 full 3D    10 patch 3D    11 maze       12 info          by port
+     1 full 3D     2 block 3D     3 full xy     4 block xy      plain, with trail
+     5 full 3D     6 block 3D     7 full xy     8 block xy      by reward time
+     9 full 3D    10 block 3D    11 maze       12 info          by port
 
 Only the plain row carries the moving trail. The coloured panels are static,
 because their colorbars and legends shift the plot area, so the fitted pixel
@@ -101,9 +101,9 @@ def read_camera(cfg, key):
     interactive plot survives untouched.
 
     Falls back to plotly's own default eye if parameters.yaml has no entry
-    under `key` yet -- a new patch has nothing hand-tuned for it the first
+    under `key` yet -- a new block has nothing hand-tuned for it the first
     time it is rendered, and this is what lets that first render happen at
-    all, so its own umap_patch_N_cr_uncolored.html can be orbited afterward to
+    all, so its own umap_block_N_cr_uncolored.html can be orbited afterward to
     find a real angle and add it under `key`.
     """
     if key not in cfg:
@@ -257,73 +257,76 @@ def trail_ramp(n_bins):
 class Bins:
     """Everything recorded per time bin, and what the trail is drawn from.
 
-    full_row and patch_row give the row of each embedding a bin corresponds to.
-    For the full session that is the bin index itself; for a patch it is the
-    bin's rank among the mask's set bins, and -1 for bins the patch does not
+    full_row and block_row give the row of each embedding a bin corresponds to.
+    For the full session that is the bin index itself; for a block it is the
+    bin's rank among the mask's set bins, and -1 for bins the block does not
     contain.
 
-    patch_mask is the patch's correct rewarded bins -- the ones its _cr
-    embedding holds, and the only patch embedding the video shows -- and
-    patch_all_mask is every bin of the patch, gaps between trials included.
+    block_mask is the block's correct rewarded bins -- the ones its _cr
+    embedding holds, and the only block embedding the video shows -- and
+    block_all_mask is every bin of the block, gaps between trials included.
     """
     times: np.ndarray
     trial_ids: np.ndarray                        # NaN between trials
     time_nearest_reward: np.ndarray
     reward_size_ms: np.ndarray                   # size of whichever reward that is, NaN with it
     port_ids: np.ndarray                         # 0 where not at a port
+    alternation: np.ndarray                      # in an alternation trial
+    rewarded: np.ndarray                         # in a rewarded trial, correct or not
     head_xy: np.ndarray
-    patch_mask: np.ndarray
-    patch_all_mask: np.ndarray
+    block_mask: np.ndarray
+    block_all_mask: np.ndarray
     full_row: np.ndarray
-    patch_row: np.ndarray
+    block_row: np.ndarray
     width: float                                 # seconds in one bin
     trail_bins: int                              # how many of them the trail spans
     trail_rgb: np.ndarray                        # and its colour, newest first
 
 
 def load_correct_rewarded(paths):
-    """correct_rewarded.csv: whether each bin is in a correct rewarded trial."""
-    return np.loadtxt(paths.label_dir / 'correct_rewarded.csv').astype(bool)
+    """Whether each bin is in a correct rewarded trial, from correct.csv and rewarded.csv."""
+    return (np.loadtxt(paths.label_dir / 'correct.csv').astype(bool)
+            & np.loadtxt(paths.label_dir / 'rewarded.csv').astype(bool))
 
 
-def load_patch_id(paths):
-    """patch_id.csv: the patch each bin falls in, the gaps between trials included."""
-    return np.loadtxt(paths.label_dir / 'patch_id.csv')
+def load_block_id(paths):
+    """block_id.csv: the block each bin falls in, the gaps between trials included."""
+    return np.loadtxt(paths.label_dir / 'block_id.csv')
 
 
-def patch_spans(paths):
-    """When each patch runs, as (patch, first, last) in session seconds.
+def block_spans(paths):
+    """When each block runs, as (block, first, last) in session seconds.
 
-    A patch is a run of trials sharing a CorrectBlock, and patch_id gives every
-    bin one -- the gaps between trials take the patch of the trial before them
+    A block is a run of trials sharing a CorrectBlock, and block_id gives every
+    bin one -- the gaps between trials take the block of the trial before them
     -- so the spans tile the session in order and never overlap, which is what
-    makes a span enough to say which patch a given moment belongs to. They are
-    exact: first and last are the patch's own first and last bins.
+    makes a span enough to say which block a given moment belongs to. They are
+    exact: first and last are the block's own first and last bins.
 
-    A patch with no correct rewarded bins is left out. Its _cr embedding cannot
+    A block with no correct rewarded bins is left out. Its _cr embedding cannot
     be fitted, so there is nothing to render for it, and choosing it would only
     fail on loading an embedding that does not exist.
     """
     times = np.loadtxt(paths.label_dir / 'bin_times.csv')
     correct_rewarded = load_correct_rewarded(paths)
-    patch_id = load_patch_id(paths)
+    block_id = load_block_id(paths)
 
     spans = []
-    for patch in np.unique(patch_id[np.isfinite(patch_id)]).astype(int):
-        in_patch = patch_id == patch
-        if (in_patch & correct_rewarded).any():
-            bins = np.flatnonzero(in_patch)
-            spans.append((int(patch), times[bins[0]], times[bins[-1]]))
+    for block in np.unique(block_id[np.isfinite(block_id)]).astype(int):
+        in_block = block_id == block
+        if (in_block & correct_rewarded).any():
+            bins = np.flatnonzero(in_block)
+            spans.append((int(block), times[bins[0]], times[bins[-1]]))
 
     return spans
 
 
-def load_bins(patch, paths):
-    """Read the per-bin csvs this patch's video needs, and size the trail."""
+def load_bins(block, paths):
+    """Read the per-bin csvs this block's video needs, and size the trail."""
     labels = paths.label_dir
     times = np.loadtxt(labels / 'bin_times.csv')
-    patch_all_mask = load_patch_id(paths) == patch
-    patch_mask = load_correct_rewarded(paths) & patch_all_mask
+    block_all_mask = load_block_id(paths) == block
+    block_mask = load_correct_rewarded(paths) & block_all_mask
 
     width = times[1] - times[0]
     trail_bins = round(TRAIL_S / width)
@@ -334,12 +337,14 @@ def load_bins(patch, paths):
         time_nearest_reward=np.loadtxt(labels / 'time_nearest_reward.csv'),
         reward_size_ms=np.loadtxt(labels / 'reward_size_ms.csv'),
         port_ids=np.loadtxt(labels / 'port_ids.csv'),
+        alternation=np.loadtxt(labels / 'alternation_trials.csv').astype(bool),
+        rewarded=np.loadtxt(labels / 'rewarded.csv').astype(bool),
         head_xy=maze_pixels(np.loadtxt(labels / 'head_positions.csv', delimiter=','),
                             paths.maze_png),
-        patch_mask=patch_mask,
-        patch_all_mask=patch_all_mask,
+        block_mask=block_mask,
+        block_all_mask=block_all_mask,
         full_row=np.arange(len(times)),
-        patch_row=np.where(patch_mask, np.cumsum(patch_mask) - 1, -1),
+        block_row=np.where(block_mask, np.cumsum(block_mask) - 1, -1),
         width=width,
         trail_bins=trail_bins,
         trail_rgb=trail_ramp(trail_bins))
@@ -399,23 +404,25 @@ class Layers:
     """Every view: the rendered ones in the order the panels read them, then the
     ones only written out."""
     full: Layer
-    patch: Layer
+    block: Layer
     full_coloured: Layer
-    patch_coloured: Layer
+    block_coloured: Layer
     full_xy: Layer
-    patch_xy: Layer
+    block_xy: Layer
     full_xy_coloured: Layer
-    patch_xy_coloured: Layer
+    block_xy_coloured: Layer
     full_ports: Layer
-    patch_ports: Layer
+    block_ports: Layer
 
     # Written out as interactive plots only; no panel reads these yet.
     correct_rewarded: Layer
     correct_rewarded_coloured: Layer
     correct_rewarded_ports: Layer
-    patch_all: Layer
-    patch_all_coloured: Layer
-    patch_all_ports: Layer
+    block_all: Layer
+    block_all_coloured: Layer
+    block_all_ports: Layer
+    full_alternation: Layer
+    block_all_alternation: Layer
 
     def all(self):
         """Each layer once, in declaration order."""
@@ -437,79 +444,79 @@ def render_layers(bins, cfg, port_colours, paths):
     here and every frame then paints onto a copy of it.
 
     The coloured views pair each bin with how far it sits from a reward. Those
-    labels were written for every bin in the session, so a patch's own come out
+    labels were written for every bin in the session, so a block's own come out
     under the same mask as its spikes, while the full session's pair with the
     full embedding directly.
     """
-    patch = cfg['patch']
-    patch_title = f'Patch {patch}'
-    patch_camera_key = f'patch_{patch}_cr_camera'
+    block = cfg['block']
+    block_title = f'Block {block}'
+    block_camera_key = f'block_{block}_cr_camera'
     full_camera = read_camera(cfg, 'full_camera')
-    patch_camera = read_camera(cfg, patch_camera_key)
+    block_camera = read_camera(cfg, block_camera_key)
 
     full_points = np.load(paths.emb_dir / 'umap_full.npy')
-    patch_points = np.load(paths.emb_dir / f'umap_patch_{patch}_cr.npy')
+    block_points = np.load(paths.emb_dir / f'umap_block_{block}_cr.npy')
 
     full_figure, full_background, full_pixels = plots.panel_and_pixels(
         full_points, FULL_TITLE, full_camera, PANEL)
-    patch_figure, patch_background, patch_pixels = plots.panel_and_pixels(
-        patch_points, patch_title, patch_camera, PANEL)
+    block_figure, block_background, block_pixels = plots.panel_and_pixels(
+        block_points, block_title, block_camera, PANEL)
 
     full_labels = bins.time_nearest_reward
-    patch_labels = bins.time_nearest_reward[bins.patch_mask]
-    report_labels(patch_labels, patch_points, 'patch')
+    block_labels = bins.time_nearest_reward[bins.block_mask]
+    report_labels(block_labels, block_points, 'block')
     report_labels(full_labels, full_points, 'session')
 
     # Same cameras and the same hidden axes as the plain views, so the two are
     # comparable at a glance and only the colour differs. Expect a far paler
-    # picture from the session than from the patch -- a patch is correct
+    # picture from the session than from the block -- a block is correct
     # rewarded trials, where almost every bin sits near a reward, while most of
     # a session does not.
     full_coloured = plots.coloured_figure(full_points, full_labels, FULL_TITLE,
                                           full_camera, PANEL)
-    patch_coloured = plots.coloured_figure(patch_points, patch_labels, patch_title,
-                                           patch_camera, PANEL)
+    block_coloured = plots.coloured_figure(block_points, block_labels, block_title,
+                                           block_camera, PANEL)
 
     # Flat views of the same two clouds, down the same pair of dimensions, so
-    # the patch and the session are read the same way. The plain ones also get
+    # the block and the session are read the same way. The plain ones also get
     # the pixel map their trail needs: a flat view has no camera, but it still
     # has to be told where a point landed -- see umap_plots.fit_flat_projection.
     full_xy_title = f'{FULL_TITLE} - xy projection'
-    patch_xy_title = f'{patch_title} - xy projection'
+    block_xy_title = f'{block_title} - xy projection'
 
     full_xy, full_xy_background, full_xy_pixels = plots.flat_panel_and_pixels(
         full_points, XY, full_xy_title, PANEL)
-    patch_xy, patch_xy_background, patch_xy_pixels = plots.flat_panel_and_pixels(
-        patch_points, XY, patch_xy_title, PANEL)
+    block_xy, block_xy_background, block_xy_pixels = plots.flat_panel_and_pixels(
+        block_points, XY, block_xy_title, PANEL)
 
     full_xy_coloured = plots.coloured_projection(full_points, full_labels, XY,
                                                  full_xy_title, PANEL)
-    patch_xy_coloured = plots.coloured_projection(patch_points, patch_labels, XY,
-                                                  patch_xy_title, PANEL)
+    block_xy_coloured = plots.coloured_projection(block_points, block_labels, XY,
+                                                  block_xy_title, PANEL)
 
     # Both clouds again, coloured by which port the mouse was at. The labels are
     # per bin and spatial -- nearest port centre within a few pixels of the
     # tracked position -- so unlike the per-trial reward labels they mark only
     # the moments actually spent at a port.
-    patch_ports = bins.port_ids[bins.patch_mask]
+    block_ports = bins.port_ids[bins.block_mask]
     full_port_figure = plots.port_figure(full_points, bins.port_ids, port_colours,
                                          FULL_TITLE, full_camera, PANEL)
-    patch_port_figure = plots.port_figure(patch_points, patch_ports, port_colours,
-                                          patch_title, patch_camera, PANEL)
+    block_port_figure = plots.port_figure(block_points, block_ports, port_colours,
+                                          block_title, block_camera, PANEL)
 
-    print(f'{int((patch_ports > 0).sum())} of {len(patch_ports)} patch bins at a port; '
+    print(f'{int((block_ports > 0).sum())} of {len(block_ports)} block bins at a port; '
           f'{int((bins.port_ids > 0).sum())} of {len(bins.port_ids)} session bins')
 
-    # The correct rewarded bins of every patch in one embedding, drawn three
+    # The correct rewarded bins of every block in one embedding, drawn three
     # ways: plain, by reward time, and by port. Nothing here depends on the
-    # patch, so each patch's session builds the same three. No panel shows them
+    # block, so each block's session builds the same three. No panel shows them
     # yet, so they are built as figures and written out as interactive plots,
     # but never rasterised: no kaleido render is spent on them. Their labels come
     # out of the per-bin files under the same mask that selected the
     # embedding's rows.
     cr_mask = load_correct_rewarded(paths)
     cr_points = np.load(paths.emb_dir / 'umap_correct_rewarded.npy')
-    cr_title = 'Correct rewarded, all patches'
+    cr_title = 'Correct rewarded, all blocks'
     cr_camera_key = 'correct_rewarded_camera'
     cr_camera = read_camera(cfg, cr_camera_key)
 
@@ -517,18 +524,18 @@ def render_layers(bins, cfg, port_colours, paths):
     cr_ports = bins.port_ids[cr_mask]
     report_labels(cr_labels, cr_points, 'correct rewarded')
 
-    # The whole of this patch -- every bin, gaps between trials included, not
+    # The whole of this block -- every bin, gaps between trials included, not
     # just its correct rewarded ones -- drawn the same three ways, and likewise
     # written out only. Its own camera key, since its layout is its own fit and
     # shares nothing with the _cr embedding's.
-    all_points = np.load(paths.emb_dir / f'umap_patch_{patch}_all.npy')
-    all_title = f'Patch {patch}, all bins'
-    all_camera_key = f'patch_{patch}_all_camera'
+    all_points = np.load(paths.emb_dir / f'umap_block_{block}_all.npy')
+    all_title = f'Block {block}, all bins'
+    all_camera_key = f'block_{block}_all_camera'
     all_camera = read_camera(cfg, all_camera_key)
 
-    all_labels = bins.time_nearest_reward[bins.patch_all_mask]
-    all_ports = bins.port_ids[bins.patch_all_mask]
-    report_labels(all_labels, all_points, 'whole patch')
+    all_labels = bins.time_nearest_reward[bins.block_all_mask]
+    all_ports = bins.port_ids[bins.block_all_mask]
+    report_labels(all_labels, all_points, 'whole block')
 
     # The coloured and port figures are rendered as well as written out, because
     # they are panels now. One more kaleido render each on a cold cache, nothing
@@ -536,31 +543,31 @@ def render_layers(bins, cfg, port_colours, paths):
     return Layers(
         full=Layer(full_figure, full_background, full_pixels,
                    'umap_full', 'full_camera'),
-        patch=Layer(patch_figure, patch_background, patch_pixels,
-                    f'umap_patch_{patch}_cr_uncolored', patch_camera_key),
+        block=Layer(block_figure, block_background, block_pixels,
+                    f'umap_block_{block}_cr_uncolored', block_camera_key),
         full_coloured=Layer(full_coloured,
                             plots.figure_image(full_coloured, PANEL),
                             name='umap_full_colored', camera_key='full_camera'),
-        patch_coloured=Layer(patch_coloured,
-                             plots.figure_image(patch_coloured, PANEL),
-                             name=f'umap_patch_{patch}_cr_colored',
-                             camera_key=patch_camera_key),
+        block_coloured=Layer(block_coloured,
+                             plots.figure_image(block_coloured, PANEL),
+                             name=f'umap_block_{block}_cr_colored',
+                             camera_key=block_camera_key),
         full_xy=Layer(full_xy, full_xy_background, full_xy_pixels,
                       'umap_full_xy_uncolored'),
-        patch_xy=Layer(patch_xy, patch_xy_background, patch_xy_pixels,
-                       f'umap_patch_{patch}_cr_xy_uncolored'),
+        block_xy=Layer(block_xy, block_xy_background, block_xy_pixels,
+                       f'umap_block_{block}_cr_xy_uncolored'),
         full_xy_coloured=Layer(full_xy_coloured,
                                plots.figure_image(full_xy_coloured, PANEL),
                                name='umap_full_xy_colored'),
-        patch_xy_coloured=Layer(patch_xy_coloured,
-                                plots.figure_image(patch_xy_coloured, PANEL),
-                                name=f'umap_patch_{patch}_cr_xy_colored'),
+        block_xy_coloured=Layer(block_xy_coloured,
+                                plots.figure_image(block_xy_coloured, PANEL),
+                                name=f'umap_block_{block}_cr_xy_colored'),
         full_ports=Layer(full_port_figure,
                          plots.figure_image(full_port_figure, PANEL),
                          name='umap_full_ports'),
-        patch_ports=Layer(patch_port_figure,
-                          plots.figure_image(patch_port_figure, PANEL),
-                          name=f'umap_patch_{patch}_cr_ports'),
+        block_ports=Layer(block_port_figure,
+                          plots.figure_image(block_port_figure, PANEL),
+                          name=f'umap_block_{block}_cr_ports'),
         correct_rewarded=Layer(
             plots.plain_figure(cr_points, cr_title, cr_camera, PANEL), None,
             name='umap_correct_rewarded_uncolored', camera_key=cr_camera_key),
@@ -570,15 +577,24 @@ def render_layers(bins, cfg, port_colours, paths):
         correct_rewarded_ports=Layer(
             plots.port_figure(cr_points, cr_ports, port_colours, cr_title, cr_camera, PANEL),
             None, name='umap_correct_rewarded_ports'),
-        patch_all=Layer(
+        block_all=Layer(
             plots.plain_figure(all_points, all_title, all_camera, PANEL), None,
-            name=f'umap_patch_{patch}_all_uncolored', camera_key=all_camera_key),
-        patch_all_coloured=Layer(
+            name=f'umap_block_{block}_all_uncolored', camera_key=all_camera_key),
+        block_all_coloured=Layer(
             plots.coloured_figure(all_points, all_labels, all_title, all_camera, PANEL), None,
-            name=f'umap_patch_{patch}_all_colored', camera_key=all_camera_key),
-        patch_all_ports=Layer(
+            name=f'umap_block_{block}_all_colored', camera_key=all_camera_key),
+        block_all_ports=Layer(
             plots.port_figure(all_points, all_ports, port_colours, all_title, all_camera, PANEL),
-            None, name=f'umap_patch_{patch}_all_ports'))
+            None, name=f'umap_block_{block}_all_ports'),
+        full_alternation=Layer(
+            plots.alternation_figure(full_points, bins.alternation, bins.rewarded,
+                                     FULL_TITLE, full_camera, PANEL),
+            None, name='umap_full_alternation', camera_key='full_camera'),
+        block_all_alternation=Layer(
+            plots.alternation_figure(all_points, bins.alternation[bins.block_all_mask],
+                                     bins.rewarded[bins.block_all_mask],
+                                     all_title, all_camera, PANEL),
+            None, name=f'umap_block_{block}_all_alternation', camera_key=all_camera_key))
 
 
 # --------------------------------------------------------------------------
@@ -634,7 +650,7 @@ def embedding_panel(layer, bins, bin_to_row):
 
         indices, alphas, colours = trail(bins, time_s)
         rows = bin_to_row[indices]
-        present = rows >= 0          # a trail bin outside this patch has no point
+        present = rows >= 0          # a trail bin outside this block has no point
 
         for row, alpha, colour in zip(rows[present], alphas[present], colours[present]):
             x, y = layer.pixels[row]
@@ -648,7 +664,7 @@ def embedding_panel(layer, bins, bin_to_row):
     return draw
 
 
-def info_panel(bins, data_file, patch):
+def info_panel(bins, data_file, block):
     """Panel 12: in words, what the other panels are showing at this instant.
 
     The session name and the label beside each row are baked into the background
@@ -656,9 +672,9 @@ def info_panel(bins, data_file, patch):
     this panel to about a millisecond, the whole reason it is PIL text rather
     than a plotly figure.
 
-    "included" is read straight off the patch mask, so it answers exactly the
-    question the patch panel poses -- is this bin one of the ones plotted there
-    -- rather than the looser question of whether the trial belongs to the patch
+    "included" is read straight off the block mask, so it answers exactly the
+    question the block panel poses -- is this bin one of the ones plotted there
+    -- rather than the looser question of whether the trial belongs to the block
     at all. A bin between trials has no trial number.
 
     "reward size" reads bins.time_nearest_reward, which is signed (negative
@@ -670,7 +686,7 @@ def info_panel(bins, data_file, patch):
     unconditionally would show a reward's size long before or after it was
     actually dispensed.
     """
-    labels = ['time', 'trial', f'patch {patch}', 'reward size']
+    labels = ['time', 'trial', f'block {block}', 'reward size']
     font = placeholder_font(PANEL // 18)
 
     background = Image.new('RGB', (PANEL, PANEL), PLACEHOLDER_BG)
@@ -700,7 +716,7 @@ def info_panel(bins, data_file, patch):
 
         values = [f'{bins.times[index]:.2f} s',
                   '-' if np.isnan(trial) else f'{int(trial)}',
-                  'included' if bins.patch_mask[index] else 'excluded',
+                  'included' if bins.block_mask[index] else 'excluded',
                   f'{int(bins.reward_size_ms[index])} ms' if dispensing else 'None']
 
         for row, value in enumerate(values):
@@ -712,7 +728,7 @@ def info_panel(bins, data_file, patch):
     return draw
 
 
-def build_panels(bins, layers, data_file, patch, maze_png):
+def build_panels(bins, layers, data_file, block, maze_png):
     """The grid, row-major from 1 in the top left, as functions of the frame time.
 
     The placeholder fallback goes unused while all twelve are filled; it is what
@@ -720,17 +736,17 @@ def build_panels(bins, layers, data_file, patch, maze_png):
     """
     live = {
         1: embedding_panel(layers.full, bins, bins.full_row),
-        2: embedding_panel(layers.patch, bins, bins.patch_row),
+        2: embedding_panel(layers.block, bins, bins.block_row),
         3: embedding_panel(layers.full_xy, bins, bins.full_row),
-        4: embedding_panel(layers.patch_xy, bins, bins.patch_row),
+        4: embedding_panel(layers.block_xy, bins, bins.block_row),
         5: static_panel(layers.full_coloured.background),
-        6: static_panel(layers.patch_coloured.background),
+        6: static_panel(layers.block_coloured.background),
         7: static_panel(layers.full_xy_coloured.background),
-        8: static_panel(layers.patch_xy_coloured.background),
+        8: static_panel(layers.block_xy_coloured.background),
         9: static_panel(layers.full_ports.background),
-        10: static_panel(layers.patch_ports.background),
+        10: static_panel(layers.block_ports.background),
         11: maze_panel(bins, maze_png),
-        12: info_panel(bins, data_file, patch),
+        12: info_panel(bins, data_file, block),
     }
     return [live[n] if n in live else placeholder(n)
             for n in range(1, COLUMNS * ROWS + 1)]
@@ -765,7 +781,7 @@ class _SuppressBenignFfmpegWarning:
 
     imageio hands ffmpeg our actual stderr file descriptor with no hook to
     intercept it, so this swaps fd 2 for a pipe for the duration of the
-    block and relays everything else straight through unfiltered.
+    with statement and relays everything else straight through unfiltered.
     """
 
     def __enter__(self):
@@ -823,9 +839,9 @@ def load_session(params):
     width, height = frame_size()
     print(f'frame {width}x{height}: {COLUMNS}x{ROWS} panels of {PANEL}x{PANEL}')
 
-    bins = load_bins(cfg['patch'], paths)
+    bins = load_bins(cfg['block'], paths)
     layers = render_layers(bins, cfg, params['port_colors'], paths)
-    panels = build_panels(bins, layers, params['data_file'], cfg['patch'],
+    panels = build_panels(bins, layers, params['data_file'], cfg['block'],
                           paths.maze_png)
 
     return Session(cfg=cfg, paths=paths, bins=bins, layers=layers, panels=panels)
@@ -846,13 +862,13 @@ def write_interactive_plots(session):
 def write_video(session, out_path=None):
     """Paint the trail onto the cached backgrounds, frame by frame, and encode.
 
-    Without an out_path, the video lands as patch_video.mp4 in the session's
+    Without an out_path, the video lands as block_video.mp4 in the session's
     figures folder.
     """
     cfg, bins = session.cfg, session.bins
     if out_path is None:
         session.paths.fig_dir.mkdir(parents=True, exist_ok=True)
-        out_path = session.paths.fig_dir / 'patch_video.mp4'
+        out_path = session.paths.fig_dir / 'block_video.mp4'
     start, duration, fps = cfg['start_time_s'], cfg['duration_s'], cfg['fps']
 
     in_window = (bins.times >= start) & (bins.times < start + duration)

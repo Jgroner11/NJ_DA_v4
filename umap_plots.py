@@ -46,6 +46,9 @@ COLORBAR_TITLE = 'seconds to nearest reward (- before, + after)'
 # with behaviour_plot.m, and port_figure is handed them.
 NO_PORT_NAME = 'not at a port'
 
+ALTERNATION_COLOUR = '#E07A1F'                   # a bin in an alternation trial
+REWARDED_COLOUR = '#2A7FA8'                      # a bin in any other rewarded trial
+
 
 def pale_marker(size):
     """The recessive style for points outside the reward window."""
@@ -214,6 +217,35 @@ def port_figure(points, ports, colours, title, camera, size):
             mode='markers',
             marker=dict(size=BASE_SIZE * 2, color=colours[port - 1]),
             name=f'port {port}', hoverinfo='skip',
+        ))
+
+    return show_category_legend(
+        apply_layout(figure, title, camera, scene_ranges(points), size))
+
+
+def alternation_figure(points, alternation, rewarded, title, camera, size):
+    """The cloud split three ways: alternation trials, the other rewarded
+    trials (correct or not), and everything else pale underneath.
+
+    Every alternation trial is also rewarded, so the three groups never
+    overlap. One trace per group, for a legend entry each, as in port_figure.
+    """
+    other_rewarded = rewarded & ~alternation
+    neither = ~rewarded & ~alternation
+    figure = go.Figure()
+
+    figure.add_trace(go.Scatter3d(
+        x=points[neither, 0], y=points[neither, 1], z=points[neither, 2],
+        mode='markers', marker=pale_marker(BASE_SIZE),
+        name='everything else', hoverinfo='skip',
+    ))
+
+    for mask, colour, name in [(other_rewarded, REWARDED_COLOUR, 'other rewarded'),
+                               (alternation, ALTERNATION_COLOUR, 'alternation')]:
+        figure.add_trace(go.Scatter3d(
+            x=points[mask, 0], y=points[mask, 1], z=points[mask, 2],
+            mode='markers', marker=dict(size=BASE_SIZE * 2, color=colour),
+            name=name, hoverinfo='skip',
         ))
 
     return show_category_legend(

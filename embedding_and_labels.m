@@ -40,27 +40,28 @@ past_end = false(size(bin_centers_sec));
 past_end(has_trial) = bin_centers_sec(has_trial) > trial_ends(trial_id_per_bin(has_trial));
 trial_id_per_bin(past_end) = NaN;
 
-% a patch is a run of trials with the same CorrectBlock; block values repeat
-% across the session, so patch identity is the run index, not the block value
-is_new_patch = [true; diff(trials.CorrectBlock) ~= 0];
-patch_id_per_trial = cumsum(is_new_patch);
+% a block is a run of trials with the same CorrectBlock; CorrectBlock values
+% repeat across the session, so block identity is the run index, not the
+% CorrectBlock value
+is_new_block = [true; diff(trials.CorrectBlock) ~= 0];
+block_id_per_trial = cumsum(is_new_block);
 
 % recomputed rather than reusing has_trial, which predates the past_end NaNs
 in_trial = ~isnan(trial_id_per_bin);
-patch_id_per_bin = nan(size(trial_id_per_bin));
-patch_id_per_bin(in_trial) = patch_id_per_trial(trial_id_per_bin(in_trial));
+block_id_per_bin = nan(size(trial_id_per_bin));
+block_id_per_bin(in_trial) = block_id_per_trial(trial_id_per_bin(in_trial));
 
 % Bins tile the session end to end, but trials do not: consecutive trials are
 % separated by the inter-trial interval, and any trial dropped in selection
 % leaves a hole the width of that whole trial. Bins landing in those gaps have
-% no trial of their own, so they take the patch of the trial before them: a
-% patch then runs from its first trial's start to the next patch's first
+% no trial of their own, so they take the block of the trial before them: a
+% block then runs from its first trial's start to the next block's first
 % trial's start, covering every bin of the session between the two. Bins
-% before the first trial, if there are any, take the first trial's patch.
+% before the first trial, if there are any, take the first trial's block.
 % They still have no trial, so the correct rewarded filter below excludes them.
 fprintf('%d of %d bins fall outside any trial (%.1f%%)\n', ...
     sum(~in_trial), n_bins, 100 * mean(~in_trial));
-patch_id_per_bin = fillmissing(fillmissing(patch_id_per_bin, 'previous'), 'next');
+block_id_per_bin = fillmissing(fillmissing(block_id_per_bin, 'previous'), 'next');
 
 units_filtered = units(ismember(units.group, {'good', 'mua'}), :);
 n_units = height(units_filtered);
@@ -126,7 +127,7 @@ n_units = height(units_filtered);
 % Signed seconds to the nearest reward, one value per bin: negative before the
 % reward, positive after it, which is the PSTH convention. Computed for every
 % bin in the session and against every rewarded trial, so a bin's nearest reward
-% may belong to a trial in another patch, or to one that was not kept. That is
+% may belong to a trial in another block, or to one that was not kept. That is
 % deliberate -- the question is when the animal last saw or next sees a reward,
 % not which trial the bin was filed under.
 reward_times = trials.TrialStartGlobalTime(trials.Rewarded == "rewarded") + ...
@@ -172,7 +173,7 @@ reward_size_nearest(use_next & has_next)  = rs(next_idx(use_next & has_next));
 reward_size_nearest(~use_next & has_prev) = rs(prev_idx(~use_next & has_prev));
 
 
-%% Export every bin, with its patch and whether it is correct rewarded
+%% Export every bin, with its block and whether it is correct rewarded
 % Under the session's own folder, as paths.py expects.
 label_dir = fullfile('data', session, 'binned_labels');
 if ~isfolder(label_dir)
@@ -180,12 +181,16 @@ if ~isfolder(label_dir)
 end
 
 % correct and rewarded are not the same thing here: the session contains both
-% correct/unrewarded and incorrect/rewarded trials, so both tests are needed.
-% This part does not depend on the patch, so it is computed once.
-trial_is_kept = trials.Correctness == "correct" & trials.Rewarded == "rewarded";
+% correct/unrewarded and incorrect/rewarded trials, so they are exported as two
+% separate columns and the Python side combines them as it needs.
+trial_is_correct = trials.Correctness == "correct";
+trial_is_rewarded = trials.Rewarded == "rewarded";
+trial_is_kept = trial_is_correct & trial_is_rewarded;
 
-keep_trial_bin = false(size(bin_centers_sec));
-keep_trial_bin(in_trial) = trial_is_kept(trial_id_per_bin(in_trial));
+correct_bin = false(size(bin_centers_sec));
+correct_bin(in_trial) = trial_is_correct(trial_id_per_bin(in_trial));
+rewarded_bin = false(size(bin_centers_sec));
+rewarded_bin(in_trial) = trial_is_rewarded(trial_id_per_bin(in_trial));
 
 % Every bin, unfiltered: units down the rows, bins across the columns. The
 % per-bin labels below index into these columns. writematrix has no precision
@@ -213,30 +218,49 @@ trial_id_per_bin_session(in_trial) = trials.SessionTrial(trial_id_per_bin(in_tri
 writematrix(trial_id_per_bin_session(:), fullfile(label_dir, 'trial_ids.csv'));
 
 % Signed seconds to the nearest reward, one row per bin, NaN where there is no
-% reward on either side. Written whole rather than per patch: it does not depend
-% on the patch, so the plotting side takes whichever subset it wants using the
+% reward on either side. Written whole rather than per block: it does not depend
+% on the block, so the plotting side takes whichever subset it wants using the
 % same mask it uses for the spikes.
 writematrix(time_nearest_reward(:), fullfile(label_dir, 'time_nearest_reward.csv'));
 
 % Size in ms of whichever reward time_nearest_reward pairs with, one row per
 % bin, NaN under the same conditions time_nearest_reward is NaN. Also written
-% whole rather than per patch, for the same reason.
+% whole rather than per block, for the same reason.
 writematrix(reward_size_nearest(:), fullfile(label_dir, 'reward_size_ms.csv'));
 
-% The two per-bin files every embedding's selection is made from, one row per
-% bin. correct_rewarded is 1 for a bin inside a trial that was both correct and
-% rewarded; patch_id is the patch every bin falls in, gaps included. Patch N's
-% correct rewarded bins are correct_rewarded & patch_id == N, and all of patch
-% N is patch_id == N, so the Python side builds each selection itself rather
-% than reading a file per patch.
-writematrix(uint8(keep_trial_bin).', fullfile(label_dir, 'correct_rewarded.csv'));
-writematrix(patch_id_per_bin(:), fullfile(label_dir, 'patch_id.csv'));
+% The per-bin files every embedding's selection is made from, one row per bin.
+% correct and rewarded are 1 for a bin inside a trial that was correct, or
+% rewarded; block_id is the block every bin falls in, gaps included. Block N's
+% correct rewarded bins are correct & rewarded & block_id == N, and all of
+% block N is block_id == N, so the Python side builds each selection itself
+% rather than reading a file per block.
+writematrix(uint8(correct_bin).', fullfile(label_dir, 'correct.csv'));
+writematrix(uint8(rewarded_bin).', fullfile(label_dir, 'rewarded.csv'));
+writematrix(block_id_per_bin(:), fullfile(label_dir, 'block_id.csv'));
 
-for selected_patch = 1:max(patch_id_per_bin)
-    in_patch = patch_id_per_bin == selected_patch;
-    fprintf('patch %d: %d bins, %d correct rewarded\n', selected_patch, ...
-        sum(in_patch), sum(in_patch & keep_trial_bin));
+for selected_block = 1:max(block_id_per_bin)
+    in_block = block_id_per_bin == selected_block;
+    fprintf('block %d: %d bins, %d correct rewarded\n', selected_block, ...
+        sum(in_block), sum(in_block & correct_bin & rewarded_bin));
 end
+
+
+%% Alternation trials
+
+% Per trial: this trial and the previous row are both correct and rewarded
+% (trial_is_kept, from the export section) at different ports. The first
+% trial has no previous one, so it is never an alternation.
+alternation_per_trial = [false; trial_is_kept(2:end) & trial_is_kept(1:end-1) & ...
+    trials.Port(2:end) ~= trials.Port(1:end-1)];
+
+% One value per bin; bins in the gaps between trials stay 0.
+is_alternation_trial = false(1, n_bins);
+is_alternation_trial(in_trial) = alternation_per_trial(trial_id_per_bin(in_trial));
+
+fprintf('%d of %d bins are in alternation trials\n', ...
+    sum(is_alternation_trial), n_bins);
+
+writematrix(uint8(is_alternation_trial).', fullfile(label_dir, 'alternation_trials.csv'));
 
 
 %% Head position per bin

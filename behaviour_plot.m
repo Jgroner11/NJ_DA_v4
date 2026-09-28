@@ -56,7 +56,7 @@ ylim(ax_rate, [0 100]);
 xlabel(ax_rate, 'Trial');
 ylabel(ax_rate, '% (rolling)');
 
-% Axis lines and ticks over the patch shading rather than under it, or the
+% Axis lines and ticks over the block shading rather than under it, or the
 % bands hide the line between the two axes and the port strip's ticks.
 set([ax_port, ax_rate], 'Layer', 'top');
 
@@ -64,47 +64,47 @@ set([ax_port, ax_rate], 'Layer', 'top');
 linkaxes([ax_port, ax_rate], 'x');
 xlim(ax_rate, [0 n_trials]);
 
-%% Patch shading
-% A patch is a run of trials sharing a CorrectBlock, so a new one starts
-% wherever the block changes -- the same definition embedding_and_labels.m
-% uses. Block values repeat across the session, so patches are numbered by run
-% rather than by value. CorrectBlock spells out the rewarded pair: 56 is ports
-% 5 and 6.
-block = trials.CorrectBlock;
-patch_first = [1; find(diff(block) ~= 0) + 1];
-patch_last = [patch_first(2:end) - 1; n_trials];
-n_patches = numel(patch_first);
+%% Block shading
+% A block is a run of trials sharing a CorrectBlock, so a new one starts
+% wherever the CorrectBlock value changes -- the same definition
+% embedding_and_labels.m uses. CorrectBlock values repeat across the session,
+% so blocks are numbered by run rather than by value. CorrectBlock spells out
+% the rewarded pair: 56 is ports 5 and 6.
+correct_block = trials.CorrectBlock;
+block_first = [1; find(diff(correct_block) ~= 0) + 1];
+block_last = [block_first(2:end) - 1; n_trials];
+n_blocks = numel(block_first);
 
-pair_a = floor(block(patch_first) / 10);
-pair_b = mod(block(patch_first), 10);
+pair_a = floor(correct_block(block_first) / 10);
+pair_b = mod(correct_block(block_first), 10);
 
-% Each patch is tinted with its rewarded pair's hue, the darker port's colour
+% Each block is tinted with its rewarded pair's hue, the darker port's colour
 % washed towards white, so the filled circles sit over a background of
-% their own colour whenever the mouse is at the right pair. Patches with the
+% their own colour whenever the mouse is at the right pair. Blocks with the
 % same pair therefore share a hue; the legend numbers them apart.
 tint = 0.25;   % how much of the port colour survives the wash
-patch_rgb = 1 - tint * (1 - hex2rgb(port_colors(pair_a)));
+block_rgb = 1 - tint * (1 - hex2rgb(port_colors(pair_a)));
 
-% Bands meet halfway between the last trial of one patch and the first of the
+% Bands meet halfway between the last trial of one block and the first of the
 % next, so each circle sits in its own trial's band, and the outer two run out
 % to the ends of the trial axis. They run up through the port strip too, one
 % band per axes, full height in each; drawn before anything else, so the
 % circles and curves land on top of them. The legend is built from the lower
-% axes' bands, one entry per patch.
-band_edges = [0; patch_first(2:end) - 0.5; n_trials];
+% axes' bands, one entry per block.
+band_edges = [0; block_first(2:end) - 0.5; n_trials];
 
-patch_bands = gobjects(n_patches, 1);
-for k = 1:n_patches
+block_bands = gobjects(n_blocks, 1);
+for k = 1:n_blocks
     left = band_edges(k);
     right = band_edges(k + 1);
     patch(ax_port, [left right right left], ax_port.YLim([1 1 2 2]), ...
-          patch_rgb(k, :), 'EdgeColor', 'none');
-    patch_bands(k) = patch(ax_rate, [left right right left], ax_rate.YLim([1 1 2 2]), ...
-                           patch_rgb(k, :), 'EdgeColor', 'none', ...
-                           'DisplayName', sprintf('Patch %d (Ports %d, %d)', ...
+          block_rgb(k, :), 'EdgeColor', 'none');
+    block_bands(k) = patch(ax_rate, [left right right left], ax_rate.YLim([1 1 2 2]), ...
+                           block_rgb(k, :), 'EdgeColor', 'none', ...
+                           'DisplayName', sprintf('Block %d (Ports %d, %d)', ...
                                                   k, pair_a(k), pair_b(k)));
 end
-patch_key = legend(patch_bands, 'AutoUpdate', 'off');   % or the rolling lines drawn later join it
+block_key = legend(block_bands, 'AutoUpdate', 'off');   % or the rolling lines drawn later join it
 
 %% Port strip
 % One circle per trial, at the port the mouse licked at, in that port's colour:
@@ -146,7 +146,7 @@ port_key = legend([key_rewarded, key_unrewarded], {'rewarded', 'unrewarded'});
 
 %% Rolling performance
 % Two trailing averages over the last rolling_window trials, this one included:
-% how many were at one of the patch's correct ports, and how many were
+% how many were at one of the block's correct ports, and how many were
 % rewarded. Correctness is exactly "at one of the ports CorrectBlock names" --
 % checked trial for trial on this session -- so it is read as recorded rather
 % than worked out again. The two lines part company where reward and
@@ -168,7 +168,7 @@ rewarded_line = plot(ax_rate, trial_x, pct_rewarded, ...
                      'Color', [0.25 0.60 0.85], 'LineWidth', 2, ...
                      'DisplayName', sprintf('%% rewarded (last %d trials)', rolling_window));
 
-% ax_rate's one legend already holds the patches, so the lines get theirs from
+% ax_rate's one legend already holds the blocks, so the lines get theirs from
 % an invisible axes, through stand-ins drawn at NaN in the same styles. The
 % stand-ins are copies, so the key cannot drift from the lines it describes.
 ax_line_key = axes(fig, 'Visible', 'off', 'HandleVisibility', 'off');
@@ -179,8 +179,8 @@ line_key = legend(ax_line_key, line_key_entries);
 %% Legends
 % All three in a margin of their own at the right, rather than inside the axes
 % where they would sit on the data: the fill key level with the top of the
-% port strip, the patch key level with the top of the percentages, and the
-% line key just below the patch key. The margin is sized from the widest
+% port strip, the block key level with the top of the percentages, and the
+% line key just below the block key. The margin is sized from the widest
 % legend, and both axes end where it begins, so they stay aligned on the trial
 % axis.
 %
@@ -192,7 +192,7 @@ line_key = legend(ax_line_key, line_key_entries);
 % MATLAB's default position rather than where the layout drew them, so the
 % legends could not be lined up against them.
 drawnow;   % legends know their size only once drawn
-keys = [port_key, patch_key, line_key];
+keys = [port_key, block_key, line_key];
 for key = keys
     key.Units = 'pixels';
     key.Position = key.Position;   % a manual position, so nothing rescales it again
@@ -211,14 +211,14 @@ port_height = (axes_top - axes_bottom) / 4;
 ax_rate.Position = [axes_left, axes_bottom, axes_width, axes_top - axes_bottom - port_height];
 ax_port.Position = [axes_left, axes_top - port_height, axes_width, port_height];
 
-for pair = {port_key, ax_port; patch_key, ax_rate}.'
+for pair = {port_key, ax_port; block_key, ax_rate}.'
     [key, ax] = pair{:};
     key.Position(1) = axes_left + axes_width + legend_gap;
     key.Position(2) = sum(ax.Position([2 4])) - key.Position(4);   % top edge level with the axes'
 end
 
-line_key.Position(1) = patch_key.Position(1);
-line_key.Position(2) = patch_key.Position(2) - legend_gap - line_key.Position(4);
+line_key.Position(1) = block_key.Position(1);
+line_key.Position(2) = block_key.Position(2) - legend_gap - line_key.Position(4);
 
 %% Save
 if ~isfolder(fig_dir)

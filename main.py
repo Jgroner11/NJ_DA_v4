@@ -7,24 +7,24 @@ the project root, after run_umap.py has written the embeddings:
     python main.py --end 600   # only clips starting before 600 s, for a quick run
 
 The session, the cameras and the frame rate come from parameters.yaml. The
-window and the patch do not: the sweep below sets them per clip, so the
-start_time_s, duration_s and patch written in the file are only what a single
+window and the block do not: the sweep below sets them per clip, so the
+start_time_s, duration_s and block written in the file are only what a single
 hand-run would have used, and are overwritten here.
 
 Every window is rendered, including the stretches where the mouse was getting
-the task wrong. Those hold no correct rewarded bins, so the patch panels draw
+the task wrong. Those hold no correct rewarded bins, so the block panels draw
 their cloud as usual but carry no trail across it, and the information panel
 reads "excluded" the whole way through, while the maze and the whole-session
 embedding are trailed as normal -- which is the point: it is the incorrect
 trajectories that are worth watching.
 
-Each clip is otherwise rendered against the patch that owns most of its bins --
-see get_patch -- which is not always the patch its start time falls in.
+Each clip is otherwise rendered against the block that owns most of its bins --
+see get_block -- which is not always the block its start time falls in.
 
 Everything lands under figures/<session>/ -- see paths.py. The clips go into
 clips/, in one folder named for the sweep, so a second sweep at other lengths
 sits beside the first rather than mixing into it. The interactive plots go into
-umap/, one set per patch rather than one per clip, and all of them are written
+umap/, one set per block rather than one per clip, and all of them are written
 before the first clip is rendered.
 """
 
@@ -62,84 +62,84 @@ DURATIONS = (30, 60, 120)
 # All the clips of one sweep together, under the session they came from.
 CLIP_DIR = PATHS.clip_dir / ('full_session_' + '-'.join(str(d) for d in DURATIONS))
 
-# Every patch's correct rewarded bins, built once from the two per-bin columns:
-# the bins its _cr embedding holds, and so the ones that decide a window. A patch
+# Every block's correct rewarded bins, built once from the two per-bin columns:
+# the bins its _cr embedding holds, and so the ones that decide a window. A block
 # with no correct rewarded trials gets an all-false mask and can never win one.
 _CORRECT_REWARDED = video.load_correct_rewarded(PATHS)
-_PATCH_ID = video.load_patch_id(PATHS)
-PATCH_MASKS = {int(patch): _CORRECT_REWARDED & (_PATCH_ID == patch)
-               for patch in np.unique(_PATCH_ID[np.isfinite(_PATCH_ID)])}
+_BLOCK_ID = video.load_block_id(PATHS)
+BLOCK_MASKS = {int(block): _CORRECT_REWARDED & (_BLOCK_ID == block)
+               for block in np.unique(_BLOCK_ID[np.isfinite(_BLOCK_ID)])}
 
-# When each patch runs, for the windows that hold no kept bins to fall back on.
-PATCH_SPANS = video.patch_spans(PATHS)
+# When each block runs, for the windows that hold no kept bins to fall back on.
+BLOCK_SPANS = video.block_spans(PATHS)
 
 
-def nearest_patch(time_s):
-    """The patch running at this moment, or the closest one if none is.
+def nearest_block(time_s):
+    """The block running at this moment, or the closest one if none is.
 
-    Distance is zero anywhere inside a patch's span, and the spans are exact
-    and tile the session, so this is simply the patch running at that moment --
-    unless that patch has no correct rewarded bins, and so no embedding to
-    render. patch_spans leaves such a patch out, and a moment inside it falls to
-    whichever neighbouring patch is nearest in time.
+    Distance is zero anywhere inside a block's span, and the spans are exact
+    and tile the session, so this is simply the block running at that moment --
+    unless that block has no correct rewarded bins, and so no embedding to
+    render. block_spans leaves such a block out, and a moment inside it falls to
+    whichever neighbouring block is nearest in time.
     """
     def distance(span):
         _, first, last = span
         return max(first - time_s, 0.0, time_s - last)
 
-    patch, _, _ = min(PATCH_SPANS, key=distance)
-    return patch
+    block, _, _ = min(BLOCK_SPANS, key=distance)
+    return block
 
 
-def get_patch(start_time_s, duration_s):
-    """Whichever patch owns the most bins in this window.
+def get_block(start_time_s, duration_s):
+    """Whichever block owns the most bins in this window.
 
-    A window is not guaranteed to sit inside one patch: patches are runs of
+    A window is not guaranteed to sit inside one block: blocks are runs of
     trials, so a long enough clip runs off the end of one and into the next, and
     a clip starting in the inter-trial gap between two may hold bins from both.
-    Counting the bins and taking the majority picks the patch the clip mostly
+    Counting the bins and taking the majority picks the block the clip mostly
     shows, which is the one whose embedding is worth rendering beside it.
 
     The masks hold correct rewarded bins only, so a window lying entirely in
     incorrect or unrewarded trials counts nothing anywhere. That is not a reason
     to skip it -- those are the trials worth watching the mouse during -- so it
-    falls back to whichever patch is nearest in time, and which patch that is
+    falls back to whichever block is nearest in time, and which block that is
     barely matters: none of the window's bins are in any of them.
 
-    Such a clip loses nothing but the patch panels' trail. Their cloud is a
-    still of the whole patch and renders as it always does; it is the moving
-    dots that are missing, because patch_row is -1 for a bin the patch does not
+    Such a clip loses nothing but the block panels' trail. Their cloud is a
+    still of the whole block and renders as it always does; it is the moving
+    dots that are missing, because block_row is -1 for a bin the block does not
     contain and embedding_panel skips those. The maze and the whole-session
     embedding are trailed as normal, since their rows cover every bin, and the
     information panel reads "excluded" throughout.
     """
     window = (BIN_TIMES >= start_time_s) & (BIN_TIMES < start_time_s + duration_s)
 
-    counts = {patch: int((mask & window).sum()) for patch, mask in PATCH_MASKS.items()}
+    counts = {block: int((mask & window).sum()) for block, mask in BLOCK_MASKS.items()}
     best = max(counts, key=counts.get)
 
-    return best if counts[best] else nearest_patch(start_time_s + duration_s / 2)
+    return best if counts[best] else nearest_block(start_time_s + duration_s / 2)
 
 
 # Three clips off every sweep point: a short one at the point itself, then two
 # longer ones starting later, so the same stretch is seen at three lengths.
 #
-# One session per patch, kept and reused. Nothing load_session builds depends on
-# the window -- only on the patch -- so rebuilding it per clip would re-render
+# One session per block, kept and reused. Nothing load_session builds depends on
+# the window -- only on the block -- so rebuilding it per clip would re-render
 # ten plotly figures to no effect. session.cfg is params['vid'] itself, the same
 # dict object, so moving the window is a matter of writing to it between calls;
-# the patch is only read while a session loads, so sharing it is safe.
+# the block is only read while a session loads, so sharing it is safe.
 #
 # Every session is loaded, and its interactive plots written, before the first
 # clip, so the plots are all on disk within minutes even when the sweep is
-# stopped early. The patches are exactly those in PATCH_SPANS: the ones with
-# correct rewarded bins, and so the only ones get_patch can return. --end does
+# stopped early. The blocks are exactly those in BLOCK_SPANS: the ones with
+# correct rewarded bins, and so the only ones get_block can return. --end does
 # not trim this, since it limits clips, not plots.
 sessions = {}
-for patch, _, _ in PATCH_SPANS:
-    params['vid']['patch'] = patch
-    sessions[patch] = video.load_session(params)
-    video.write_interactive_plots(sessions[patch])
+for block, _, _ in BLOCK_SPANS:
+    params['vid']['block'] = block
+    sessions[block] = video.load_session(params)
+    video.write_interactive_plots(sessions[block])
 
 CLIP_DIR.mkdir(parents=True, exist_ok=True)
 print(f'writing clips to {CLIP_DIR}')
@@ -149,15 +149,15 @@ for t in range(0, round(BIN_TIMES[-1]), 210):
         if args.end is not None and start_time >= args.end:
             continue
 
-        patch = get_patch(start_time, movie_duration)
-        session = sessions[patch]
+        block = get_block(start_time, movie_duration)
+        session = sessions[block]
 
         session.cfg['start_time_s'] = start_time
         session.cfg['duration_s'] = movie_duration
 
         started = time.perf_counter()
         video.write_video(session, CLIP_DIR /
-                          f'patch{patch}_{start_time}s_{movie_duration}s.mp4')
+                          f'block{block}_{start_time}s_{movie_duration}s.mp4')
         elapsed = time.perf_counter() - started
 
         frames = round(movie_duration * session.cfg['fps'])
