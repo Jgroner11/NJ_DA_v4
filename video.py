@@ -273,6 +273,7 @@ class Bins:
     port_ids: np.ndarray                         # 0 where not at a port
     switch_stay: np.ndarray                      # 1 switch, 2 stay, 0 neither
     at_trial_port: np.ndarray                    # at its own trial's port
+    patch_identified: np.ndarray                 # after its block's patch was identified
     correct: np.ndarray                          # in a correct trial
     rewarded: np.ndarray                         # in a rewarded trial
     head_xy: np.ndarray
@@ -296,12 +297,14 @@ def switch_stay_groups(bins):
 
     Only bins where the mouse is at its own rewarded trial's port are coloured:
     switch and stay as MATLAB labelled them, then the remaining correct rewarded
-    trials, then the incorrect rewarded ones. Unrewarded trials, bins away from
-    the port and the gaps between trials are all 0.
+    trials, split by whether their block's patch had been identified yet, then
+    the incorrect rewarded ones. Unrewarded trials, bins away from the port and
+    the gaps between trials are all 0.
     """
     at_reward = bins.at_trial_port & bins.rewarded
     groups = np.zeros(len(bins.times), dtype=int)
     groups[at_reward & bins.correct] = 3
+    groups[at_reward & bins.correct & bins.patch_identified] = 5
     groups[at_reward & ~bins.correct] = 4
     groups[at_reward & (bins.switch_stay == 1)] = 1
     groups[at_reward & (bins.switch_stay == 2)] = 2
@@ -358,6 +361,7 @@ def load_bins(block, paths):
         port_ids=np.loadtxt(labels / 'port_ids.csv'),
         switch_stay=np.loadtxt(labels / 'switch_stay.csv'),
         at_trial_port=np.loadtxt(labels / 'at_trial_port.csv').astype(bool),
+        patch_identified=np.loadtxt(labels / 'patch_identified.csv').astype(bool),
         correct=np.loadtxt(labels / 'correct.csv').astype(bool),
         rewarded=np.loadtxt(labels / 'rewarded.csv').astype(bool),
         head_xy=maze_pixels(np.loadtxt(labels / 'head_positions.csv', delimiter=','),

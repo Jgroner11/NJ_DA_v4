@@ -273,6 +273,29 @@ fprintf('%d switch and %d stay trials of %d\n', ...
 writematrix(uint8(switch_stay_bin).', fullfile(label_dir, 'switch_stay.csv'));
 
 
+%% Patch identification
+
+% A block's patch counts as identified once the mouse has been rewarded in it
+% three times: every trial after its third correct rewarded trial in the
+% block. The count restarts each block, since each block has its own patch,
+% and the third rewarded trial itself is still before identification.
+patch_rewards = 3;
+
+rewards_before = cumsum(eligible) - eligible;   % in the session, this trial excluded
+block_first = find(is_new_block);
+rewards_before_in_block = rewards_before - rewards_before(block_first(block_id_per_trial));
+identified_per_trial = rewards_before_in_block >= patch_rewards;
+
+% One value per bin; bins in the gaps between trials stay 0.
+identified_bin = false(1, n_bins);
+identified_bin(in_trial) = identified_per_trial(trial_id_per_bin(in_trial));
+
+fprintf('%d of %d trials after patch identification\n', ...
+    sum(identified_per_trial), height(trials));
+
+writematrix(uint8(identified_bin).', fullfile(label_dir, 'patch_identified.csv'));
+
+
 %% Head position per bin
 
 % The video is stored per trial, so frames go onto the session clock the same

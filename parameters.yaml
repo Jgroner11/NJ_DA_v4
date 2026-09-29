@@ -1,14 +1,14 @@
 # 17/05/2026
-# data_file: reduced_np_data_17_05_2026.mat
-# maze_png: NPC4_2026_05_17_17_10_50_blackout.png
+data_file: reduced_np_data_17_05_2026.mat
+maze_png: NPC4_2026_05_17_17_10_50_blackout.png
 
 # 18/05/2026
 # data_file: reduced_np_18_05_2025.mat
 # maze_png: NPC4_2026_05_18_18_11_03_blackout.png
 
 # 25/05/2026
-data_file: reduced_np_data_25_05_2026.mat
-maze_png: NPC4_2026_05_25_15_42_57_blackout.png
+# data_file: reduced_np_data_25_05_2026.mat
+# maze_png: NPC4_2026_05_25_15_42_57_blackout.png
 
 bin_size_ms: 100
 sigma_bins: 2

@@ -50,7 +50,8 @@ NO_PORT_NAME = 'not at a port'
 SWITCH_STAY_GROUPS = [
     (1, 'switch', '#E07A1F'),
     (2, 'stay', '#2A7FA8'),
-    (3, 'other correct rewarded', '#7A9A3A'),
+    (3, 'other correct rewarded, pre patch', '#A6CC5C'),
+    (5, 'other correct rewarded, post patch', '#3F6B2A'),
     (4, 'incorrect rewarded', '#B8336A'),
 ]
 
