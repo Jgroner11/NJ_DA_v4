@@ -245,22 +245,32 @@ for selected_block = 1:max(block_id_per_bin)
 end
 
 
-%% Alternation trials
+%% Switch and stay trials
 
-% Per trial: this trial and the previous row are both correct and rewarded
-% (trial_is_kept, from the export section) at different ports. The first
-% trial has no previous one, so it is never an alternation.
-alternation_per_trial = [false; trial_is_kept(2:end) & trial_is_kept(1:end-1) & ...
-    trials.Port(2:end) ~= trials.Port(1:end-1)];
+% A trial is a switch or a stay when it and the previous row are both correct
+% and rewarded, both in the same block, and both at a port of that block's
+% rewarded pair (CorrectBlock spells it out: 56 is ports 5 and 6). A switch
+% moved between the pair's two ports, a stay went back to the same one.
+in_pair = trials.Port == floor(trials.CorrectBlock / 10) | ...
+    trials.Port == mod(trials.CorrectBlock, 10);
+eligible = trial_is_kept & in_pair;
+paired = [false; eligible(2:end) & eligible(1:end-1) & ...
+    block_id_per_trial(2:end) == block_id_per_trial(1:end-1)];
+same_port = [false; trials.Port(2:end) == trials.Port(1:end-1)];
+
+% 1 switch, 2 stay, 0 anything else.
+switch_stay_per_trial = zeros(height(trials), 1);
+switch_stay_per_trial(paired & ~same_port) = 1;
+switch_stay_per_trial(paired & same_port) = 2;
 
 % One value per bin; bins in the gaps between trials stay 0.
-is_alternation_trial = false(1, n_bins);
-is_alternation_trial(in_trial) = alternation_per_trial(trial_id_per_bin(in_trial));
+switch_stay_bin = zeros(1, n_bins);
+switch_stay_bin(in_trial) = switch_stay_per_trial(trial_id_per_bin(in_trial));
 
-fprintf('%d of %d bins are in alternation trials\n', ...
-    sum(is_alternation_trial), n_bins);
+fprintf('%d switch and %d stay trials of %d\n', ...
+    sum(switch_stay_per_trial == 1), sum(switch_stay_per_trial == 2), height(trials));
 
-writematrix(uint8(is_alternation_trial).', fullfile(label_dir, 'alternation_trials.csv'));
+writematrix(uint8(switch_stay_bin).', fullfile(label_dir, 'switch_stay.csv'));
 
 
 %% Head position per bin
@@ -379,3 +389,7 @@ for port = 1:n_ports
 end
 
 writematrix(port_per_bin, fullfile(label_dir, 'port_ids.csv'));
+
+% 1 for a bin where the mouse is at its own trial's port, 0 otherwise, the
+% gaps between trials included -- where that trial's choice actually played out.
+writematrix(uint8(matched_bin).', fullfile(label_dir, 'at_trial_port.csv'));

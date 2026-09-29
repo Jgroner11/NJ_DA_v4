@@ -271,8 +271,10 @@ class Bins:
     time_nearest_reward: np.ndarray
     reward_size_ms: np.ndarray                   # size of whichever reward that is, NaN with it
     port_ids: np.ndarray                         # 0 where not at a port
-    alternation: np.ndarray                      # in an alternation trial
-    rewarded: np.ndarray                         # in a rewarded trial, correct or not
+    switch_stay: np.ndarray                      # 1 switch, 2 stay, 0 neither
+    at_trial_port: np.ndarray                    # at its own trial's port
+    correct: np.ndarray                          # in a correct trial
+    rewarded: np.ndarray                         # in a rewarded trial
     head_xy: np.ndarray
     block_mask: np.ndarray
     block_all_mask: np.ndarray
@@ -287,6 +289,23 @@ def load_correct_rewarded(paths):
     """Whether each bin is in a correct rewarded trial, from correct.csv and rewarded.csv."""
     return (np.loadtxt(paths.label_dir / 'correct.csv').astype(bool)
             & np.loadtxt(paths.label_dir / 'rewarded.csv').astype(bool))
+
+
+def switch_stay_groups(bins):
+    """Each bin's code in umap_plots.SWITCH_STAY_GROUPS, 0 for the pale underlay.
+
+    Only bins where the mouse is at its own rewarded trial's port are coloured:
+    switch and stay as MATLAB labelled them, then the remaining correct rewarded
+    trials, then the incorrect rewarded ones. Unrewarded trials, bins away from
+    the port and the gaps between trials are all 0.
+    """
+    at_reward = bins.at_trial_port & bins.rewarded
+    groups = np.zeros(len(bins.times), dtype=int)
+    groups[at_reward & bins.correct] = 3
+    groups[at_reward & ~bins.correct] = 4
+    groups[at_reward & (bins.switch_stay == 1)] = 1
+    groups[at_reward & (bins.switch_stay == 2)] = 2
+    return groups
 
 
 def load_block_id(paths):
@@ -337,7 +356,9 @@ def load_bins(block, paths):
         time_nearest_reward=np.loadtxt(labels / 'time_nearest_reward.csv'),
         reward_size_ms=np.loadtxt(labels / 'reward_size_ms.csv'),
         port_ids=np.loadtxt(labels / 'port_ids.csv'),
-        alternation=np.loadtxt(labels / 'alternation_trials.csv').astype(bool),
+        switch_stay=np.loadtxt(labels / 'switch_stay.csv'),
+        at_trial_port=np.loadtxt(labels / 'at_trial_port.csv').astype(bool),
+        correct=np.loadtxt(labels / 'correct.csv').astype(bool),
         rewarded=np.loadtxt(labels / 'rewarded.csv').astype(bool),
         head_xy=maze_pixels(np.loadtxt(labels / 'head_positions.csv', delimiter=','),
                             paths.maze_png),
@@ -421,8 +442,8 @@ class Layers:
     block_all: Layer
     block_all_coloured: Layer
     block_all_ports: Layer
-    full_alternation: Layer
-    block_all_alternation: Layer
+    full_switch_stay: Layer
+    block_all_switch_stay: Layer
 
     def all(self):
         """Each layer once, in declaration order."""
@@ -537,6 +558,8 @@ def render_layers(bins, cfg, port_colours, paths):
     all_ports = bins.port_ids[bins.block_all_mask]
     report_labels(all_labels, all_points, 'whole block')
 
+    groups = switch_stay_groups(bins)
+
     # The coloured and port figures are rendered as well as written out, because
     # they are panels now. One more kaleido render each on a cold cache, nothing
     # on a warm one.
@@ -586,15 +609,13 @@ def render_layers(bins, cfg, port_colours, paths):
         block_all_ports=Layer(
             plots.port_figure(all_points, all_ports, port_colours, all_title, all_camera, PANEL),
             None, name=f'umap_block_{block}_all_ports'),
-        full_alternation=Layer(
-            plots.alternation_figure(full_points, bins.alternation, bins.rewarded,
-                                     FULL_TITLE, full_camera, PANEL),
-            None, name='umap_full_alternation', camera_key='full_camera'),
-        block_all_alternation=Layer(
-            plots.alternation_figure(all_points, bins.alternation[bins.block_all_mask],
-                                     bins.rewarded[bins.block_all_mask],
+        full_switch_stay=Layer(
+            plots.switch_stay_figure(full_points, groups, FULL_TITLE, full_camera, PANEL),
+            None, name='umap_full_switch_stay', camera_key='full_camera'),
+        block_all_switch_stay=Layer(
+            plots.switch_stay_figure(all_points, groups[bins.block_all_mask],
                                      all_title, all_camera, PANEL),
-            None, name=f'umap_block_{block}_all_alternation', camera_key=all_camera_key))
+            None, name=f'umap_block_{block}_all_switch_stay', camera_key=all_camera_key))
 
 
 # --------------------------------------------------------------------------
