@@ -9,6 +9,7 @@ paths.py. No plotting: this only produces the embeddings.
     umap_correct_rewarded.npy  (n_kept, n_components)   correct_rewarded
     umap_block_<N>_cr.npy      (n_kept, n_components)   correct_rewarded & block_id == N
     umap_block_<N>_all.npy     (n_kept, n_components)   block_id == N
+    umap_decision_region.npy   (n_kept, n_components)   in_decision_region
 
 Every selection is made from three per-bin columns, correct.csv and rewarded.csv
 (0/1, combined here into correct_rewarded) and block_id.csv (the block each bin falls in, the gaps between trials
@@ -127,8 +128,10 @@ def selections(n_bins):
     correct_rewarded = (load_column('correct.csv', n_bins).astype(bool)
                         & load_column('rewarded.csv', n_bins).astype(bool))
     block_id = load_column('block_id.csv', n_bins)
+    in_decision_region = load_column('in_decision_region.csv', n_bins).astype(bool)
 
-    found = [('correct_rewarded', correct_rewarded)]
+    found = [('correct_rewarded', correct_rewarded),
+             ('decision_region', in_decision_region)]
     for block in np.unique(block_id[np.isfinite(block_id)]).astype(int):
         in_block = block_id == block
         found.append((f'block_{block}_cr', correct_rewarded & in_block))

@@ -416,3 +416,21 @@ writematrix(port_per_bin, fullfile(label_dir, 'port_ids.csv'));
 % 1 for a bin where the mouse is at its own trial's port, 0 otherwise, the
 % gaps between trials included -- where that trial's choice actually played out.
 writematrix(uint8(matched_bin).', fullfile(label_dir, 'at_trial_port.csv'));
+
+
+%% Maze lines
+
+% Pixel rows of the two horizontal lines drawn across the maze, counted from
+% the top of the blackout frame (maze_png in parameters.yaml). head_y_per_bin
+% is in pixels of that same full-size frame, so the two compare directly.
+top = 260;
+bottom = 600;
+
+% 1 for a bin whose head position lies between the two lines, edges included,
+% 0 otherwise. A bin with no position (NaN, including every bin in the gaps
+% between trials) compares false and so comes out 0.
+in_decision_region = head_y_per_bin >= top & head_y_per_bin <= bottom;
+
+fprintf('%d of %d bins in the decision region\n', sum(in_decision_region), n_bins);
+
+writematrix(uint8(in_decision_region).', fullfile(label_dir, 'in_decision_region.csv'));

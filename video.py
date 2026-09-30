@@ -448,6 +448,8 @@ class Layers:
     block_all_ports: Layer
     full_switch_stay: Layer
     block_all_switch_stay: Layer
+    decision_region: Layer
+    decision_region_xy: Layer
 
     def all(self):
         """Each layer once, in declaration order."""
@@ -564,6 +566,14 @@ def render_layers(bins, cfg, port_colours, paths):
 
     groups = switch_stay_groups(bins)
 
+    # The bins whose head position lies between the two lines of the Maze lines
+    # section in embedding_and_labels.m, in their own fit, drawn plain in 3D and
+    # flat down the same dimensions as the other xy views. Written out only.
+    dr_points = np.load(paths.emb_dir / 'umap_decision_region.npy')
+    dr_title = 'Decision region'
+    dr_camera_key = 'decision_region_camera'
+    dr_camera = read_camera(cfg, dr_camera_key)
+
     # The coloured and port figures are rendered as well as written out, because
     # they are panels now. One more kaleido render each on a cold cache, nothing
     # on a warm one.
@@ -619,7 +629,13 @@ def render_layers(bins, cfg, port_colours, paths):
         block_all_switch_stay=Layer(
             plots.switch_stay_figure(all_points, groups[bins.block_all_mask],
                                      all_title, all_camera, PANEL),
-            None, name=f'umap_block_{block}_all_switch_stay', camera_key=all_camera_key))
+            None, name=f'umap_block_{block}_all_switch_stay', camera_key=all_camera_key),
+        decision_region=Layer(
+            plots.plain_figure(dr_points, dr_title, dr_camera, PANEL), None,
+            name='umap_decision_region_uncolored', camera_key=dr_camera_key),
+        decision_region_xy=Layer(
+            plots.plain_projection(dr_points, XY, f'{dr_title} - xy projection', PANEL),
+            None, name='umap_decision_region_xy_uncolored'))
 
 
 # --------------------------------------------------------------------------
