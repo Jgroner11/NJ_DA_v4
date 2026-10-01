@@ -30,29 +30,8 @@ port_colors:
 vid:
   start_time_s: 4731.2
   duration_s: 60
-  block: 5
   fps: 30
   full_camera:
     x: -1.910
     y: 0.794
     z: 1.106
-  block_1_cr_camera:
-    x: -0.505
-    y: -0.984
-    z: 1.861
-  block_2_cr_camera:
-    x: -0.229
-    y: 2.175
-    z: 0.845
-  block_3_cr_camera:
-    x: -0.455
-    y: -1.357
-    z: -1.858
-  block_4_cr_camera:
-    x: -1.553
-    y: -1.741
-    z: 0.232
-  block_5_cr_camera:
-    x: 1.952
-    y: -0.449
-    z: 1.219

@@ -10,7 +10,7 @@ every input and output together and a second session never overwrites the first:
     figures/<session>/behaviour.png        behaviour_plot.m
     figures/<session>/umap/                video.write_interactive_plots
     figures/<session>/clips/<sweep>/       main.py
-    figures/<session>/block_video.mp4      video.write_video, when run by hand
+    figures/<session>/session_video.mp4    video.write_video, when run by hand
 
 The MATLAB scripts build the same paths themselves; keep them in step with this.
 """

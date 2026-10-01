@@ -20,6 +20,8 @@ on the box without having to pass it around.
 
 import hashlib
 import io
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +29,8 @@ import plotly.graph_objects as go
 from PIL import Image
 
 CACHE_DIR = Path('.cache')                       # shared with run_umap.py
+RENDER_TIMEOUT_S = 120                           # a render past this is taken as hung
+RENDER_ATTEMPTS = 3                              # and retried this many times in all
 
 BACKGROUND = '#fcfcfb'                           # the surface a figure sits on
 POINT_COLOUR = '#52514e'                         # an ordinary point in the cloud
@@ -410,6 +414,61 @@ def flat_panel_and_pixels(points, dims, title, size):
     return figure, background, pixels
 
 
+# Run in a child interpreter by render_png: the figure's JSON in on stdin, the
+# PNG bytes out on stdout.
+_RENDER_SCRIPT = """
+import sys
+import plotly.io as pio
+size = int(sys.argv[1])
+figure = pio.from_json(sys.stdin.buffer.read().decode())
+sys.stdout.buffer.write(figure.to_image(format='png', width=size, height=size))
+"""
+
+
+def kill_tree(process):
+    """Kill a process and everything it started, kaleido's Chrome included."""
+    if sys.platform == 'win32':
+        subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)],
+                       capture_output=True)
+    else:
+        process.kill()
+    process.wait()
+
+
+def render_png(figure, size):
+    """A kaleido render as PNG bytes, given up on and retried if it hangs.
+
+    kaleido starts a headless Chrome for every render and has no timeout of its
+    own: if that Chrome fails to start or dies, to_image waits forever with
+    nothing running. That was seen mid-run, on a figure that rendered in 8.5 s
+    when tried again by itself, so it is a fault of the moment rather than of
+    the figure. The render therefore runs in a child interpreter that can be
+    killed, Chrome and all, after RENDER_TIMEOUT_S, and is tried again from
+    scratch, up to RENDER_ATTEMPTS times. Starting that interpreter costs a
+    second or two against a render's several.
+    """
+    for attempt in range(1, RENDER_ATTEMPTS + 1):
+        process = subprocess.Popen([sys.executable, '-c', _RENDER_SCRIPT, str(size)],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+        try:
+            png, errors = process.communicate(figure.to_json().encode(),
+                                              timeout=RENDER_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            kill_tree(process)
+            print(f'  render hung for {RENDER_TIMEOUT_S} s (attempt {attempt} of '
+                  f'{RENDER_ATTEMPTS}); killed it', flush=True)
+            continue
+
+        if process.returncode == 0 and png:
+            return png
+        print(f'  render failed (attempt {attempt} of {RENDER_ATTEMPTS}):\n'
+              f'{errors.decode(errors="replace").strip()}', flush=True)
+
+    raise RuntimeError(f'kaleido could not render {figure.layout.title.text or "a figure"} '
+                       f'in {RENDER_ATTEMPTS} attempts')
+
+
 def figure_image(figure, size):
     """A figure rasterised to a size x size RGB array, cached on disk.
 
@@ -436,7 +495,7 @@ def figure_image(figure, size):
 
     print(f'rendering {figure.layout.title.text or "figure"} at {size}x{size}...',
           flush=True)
-    png = figure.to_image(format='png', width=size, height=size)
+    png = render_png(figure, size)
 
     CACHE_DIR.mkdir(exist_ok=True)
     cache_path.write_bytes(png)

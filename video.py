@@ -1,16 +1,30 @@
-"""Twelve-panel video: a 4x3 grid, every panel live.
+"""Panel video: an 8x5 grid, one embedding per column, one colouring per row.
 
-Twelve panels, four across and three down, numbered row-major from 1 in the top
-left. Odd columns hold the whole session and even columns the selected block, so
-each pair sits side by side and the two are read together:
+Eight columns, one embedding each, and four rows, one colouring each, then a
+fifth row for what is not an embedding:
 
-     1 full 3D     2 block 3D     3 full xy     4 block xy      plain, with trail
-     5 full 3D     6 block 3D     7 full xy     8 block xy      by reward time
-     9 full 3D    10 block 3D    11 maze       12 info          by port
+              Full   CR   B1   B2   B3   B4   B5   Region
+    plain      .     .    .    .    .    .    .    .        with trail
+    reward     .     .    .    .    .    .    .    .        by reward time
+    ports      .     .    .    .    .    .    .    .        by port
+    switch     .     .    .    .    .    .    .    .        by switch / stay group
+    row 5    info  maze  behaviour (3 wide) ----   -    -    -
 
-Only the plain row carries the moving trail. The coloured panels are static,
-because their colorbars and legends shift the plot area, so the fitted pixel
-maps describe the plain panels' layout rather than theirs.
+CR is the correct rewarded bins of every block in one fit, B1..B5 the whole of
+each block, gaps between trials included, and Region the bins between the two
+lines of the Maze lines section in embedding_and_labels.m. A block beyond the
+fifth is fitted by run_umap.py but never shown; a column whose embedding does
+not exist -- a session with fewer blocks, or a selection too small to fit --
+is left as blank panels.
+
+Only the plain row carries the moving trail, and only for bins the column's
+embedding holds: a column's trail drops out while the mouse is somewhere that
+embedding was not fitted on. The coloured panels are static, because their
+colorbars and legends shift the plot area, so the fitted pixel maps describe the
+plain panels' layout rather than theirs.
+
+The behaviour panel is behaviour_plot.m's figure, with a line at the current
+trial, placed from the axis table that script writes beside it.
 
 Every panel is the same square, PANEL pixels a side, which means the maze is now
 scaled down to fit one. Its tracking coordinates are therefore no longer pixel
@@ -49,20 +63,24 @@ Needs kaleido (plotly's static image export) and imageio-ffmpeg (the encoder):
 import os
 import re
 import threading
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 
 import imageio.v2 as imageio
 import numpy as np
 import plotly.colors as pc
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps
 
 import umap_plots as plots
 from paths import session_paths
 from umap_plots import BACKGROUND
 
-COLUMNS = 4                                      # panels across
-ROWS = 3                                         # and down
+COLUMNS = 8                                      # panels across
+ROWS = 5                                         # and down
 PANEL = 480                                      # side of one panel, in pixels
+BLOCKS_SHOWN = 5                                 # block columns, B1 to this
+BEHAVIOUR_SPAN = 3                               # panels the behaviour figure spans
+BEHAVIOUR_LINE = '#52514e'                       # the current-trial line on it
+BEHAVIOUR_LINE_WIDTH = 2                         # in pixels
 
 PLACEHOLDER_BG = '#ffffff'                       # an empty panel
 PLACEHOLDER_INK = '#9a9892'                      # and the number written on it
@@ -84,8 +102,10 @@ MIN_ALPHA = 0.1                                  # opacity of its oldest dot
 CAMERA_ZOOM = 0.7                                # below 1 pulls the viewer in
 DEFAULT_EYE = dict(x=1.25, y=1.25, z=1.25)       # plotly's own default 3D eye
 
-FULL_TITLE = 'Full session'
 XY = (0, 1)                                      # the dimensions a flat view keeps
+
+# One per row of the grid, top to bottom: the suffix of each view's html file.
+VIEWS = ['uncolored', 'colored', 'ports', 'switch_stay']
 
 
 # --------------------------------------------------------------------------
@@ -101,9 +121,9 @@ def read_camera(cfg, key):
     interactive plot survives untouched.
 
     Falls back to plotly's own default eye if parameters.yaml has no entry
-    under `key` yet -- a new block has nothing hand-tuned for it the first
+    under `key` yet -- a new embedding has nothing hand-tuned for it the first
     time it is rendered, and this is what lets that first render happen at
-    all, so its own umap_block_N_cr_uncolored.html can be orbited afterward to
+    all, so its own umap_<name>_uncolored.html can be orbited afterward to
     find a real angle and add it under `key`.
     """
     if key not in cfg:
@@ -121,24 +141,30 @@ def disc_offsets(radius):
     return dy[inside], dx[inside]
 
 
-def maze_geometry(maze_png):
-    """How the blackout frame is laid into a panel: size on screen, and offset.
+def pad_geometry(image_size, box):
+    """How an image is laid into a box by ImageOps.pad: size on screen, and offset.
 
     Mirrors what ImageOps.pad does -- scale to fit preserving the aspect, then
-    centre -- because maze_pixels has to reproduce it exactly to put dots in the
-    right place. Written out rather than assumed so the two cannot drift: the
-    rounding here is PIL's own, and // 2 in place of round() would sit a pixel
-    off for some panel sizes.
+    centre -- because the pixel maps below have to reproduce it exactly to put
+    marks in the right place. Written out rather than assumed so the two cannot
+    drift: the rounding here is PIL's own, and // 2 in place of round() would
+    sit a pixel off for some sizes.
     """
-    width, height = Image.open(maze_png).size
+    width, height = image_size
+    box_width, box_height = box
 
-    if width > height:                        # the panel is square, so this is the test
-        new_width, new_height = PANEL, round(height / width * PANEL)
+    if width / height > box_width / box_height:
+        new_width, new_height = box_width, round(height / width * box_width)
     else:
-        new_width, new_height = round(width / height * PANEL), PANEL
+        new_width, new_height = round(width / height * box_height), box_height
 
     return (width, height, new_width, new_height,
-            round((PANEL - new_width) * 0.5), round((PANEL - new_height) * 0.5))
+            round((box_width - new_width) * 0.5), round((box_height - new_height) * 0.5))
+
+
+def maze_geometry(maze_png):
+    """How the blackout frame is laid into its square panel."""
+    return pad_geometry(Image.open(maze_png).size, (PANEL, PANEL))
 
 
 def maze_pixels(positions, maze_png):
@@ -188,33 +214,32 @@ def fitted_font(text, max_width, size):
     return placeholder_font(8)
 
 
-def blank_panel(number):
-    """An empty panel: white, its number in the middle, a hairline round the edge.
+def blank_panel(text, width=PANEL):
+    """An empty panel: white, `text` in the middle, a hairline round the edge.
 
-    The border is not decoration -- without it thirteen white squares merge into
-    one white area and the grid it is meant to show cannot be seen.
+    The border is not decoration -- without it neighbouring white panels merge
+    into one white area and the grid it is meant to show cannot be seen.
     """
-    image = Image.new('RGB', (PANEL, PANEL), PLACEHOLDER_BG)
+    image = Image.new('RGB', (width, PANEL), PLACEHOLDER_BG)
     draw = ImageDraw.Draw(image)
-    draw.rectangle([0, 0, PANEL - 1, PANEL - 1], outline=PLACEHOLDER_EDGE)
+    draw.rectangle([0, 0, width - 1, PANEL - 1], outline=PLACEHOLDER_EDGE)
 
-    text = f'panel {number}'
-    font = placeholder_font(PANEL // 12)
+    font = fitted_font(text, width - 2 * INFO_X, PANEL // 12)
     left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
-    draw.text(((PANEL - (right - left)) / 2 - left,
+    draw.text(((width - (right - left)) / 2 - left,
                (PANEL - (bottom - top)) / 2 - top),
               text, fill=PLACEHOLDER_INK, font=font)
 
     return np.asarray(image)
 
 
-def placeholder(number):
-    """A panel function for a slot with no plot in it yet.
+def placeholder(text, width=PANEL):
+    """A panel function for a slot with nothing to show.
 
     The image is built once and handed back unchanged every frame, so an empty
     panel costs nothing per frame beyond being copied into the grid.
     """
-    image = blank_panel(number)
+    image = blank_panel(text, width)
     return lambda time_s: image
 
 
@@ -255,17 +280,7 @@ def trail_ramp(n_bins):
 
 @dataclass
 class Bins:
-    """Everything recorded per time bin, and what the trail is drawn from.
-
-    full_row and block_row give the row of each embedding a bin corresponds to.
-    For the full session that is the bin index itself; for a block it is the
-    bin's rank among the mask's set bins, and -1 for bins the block does not
-    contain.
-
-    block_mask is the block's correct rewarded bins -- the ones its _cr
-    embedding holds, and the only block embedding the video shows -- and
-    block_all_mask is every bin of the block, gaps between trials included.
-    """
+    """Everything recorded per time bin, and what the trail is drawn from."""
     times: np.ndarray
     trial_ids: np.ndarray                        # NaN between trials
     time_nearest_reward: np.ndarray
@@ -276,20 +291,12 @@ class Bins:
     patch_identified: np.ndarray                 # after its block's patch was identified
     correct: np.ndarray                          # in a correct trial
     rewarded: np.ndarray                         # in a rewarded trial
+    block_id: np.ndarray                         # every bin's block, gaps included
+    in_decision_region: np.ndarray               # head between the maze lines
     head_xy: np.ndarray
-    block_mask: np.ndarray
-    block_all_mask: np.ndarray
-    full_row: np.ndarray
-    block_row: np.ndarray
     width: float                                 # seconds in one bin
     trail_bins: int                              # how many of them the trail spans
     trail_rgb: np.ndarray                        # and its colour, newest first
-
-
-def load_correct_rewarded(paths):
-    """Whether each bin is in a correct rewarded trial, from correct.csv and rewarded.csv."""
-    return (np.loadtxt(paths.label_dir / 'correct.csv').astype(bool)
-            & np.loadtxt(paths.label_dir / 'rewarded.csv').astype(bool))
 
 
 def switch_stay_groups(bins):
@@ -311,44 +318,10 @@ def switch_stay_groups(bins):
     return groups
 
 
-def load_block_id(paths):
-    """block_id.csv: the block each bin falls in, the gaps between trials included."""
-    return np.loadtxt(paths.label_dir / 'block_id.csv')
-
-
-def block_spans(paths):
-    """When each block runs, as (block, first, last) in session seconds.
-
-    A block is a run of trials sharing a CorrectBlock, and block_id gives every
-    bin one -- the gaps between trials take the block of the trial before them
-    -- so the spans tile the session in order and never overlap, which is what
-    makes a span enough to say which block a given moment belongs to. They are
-    exact: first and last are the block's own first and last bins.
-
-    A block with no correct rewarded bins is left out. Its _cr embedding cannot
-    be fitted, so there is nothing to render for it, and choosing it would only
-    fail on loading an embedding that does not exist.
-    """
-    times = np.loadtxt(paths.label_dir / 'bin_times.csv')
-    correct_rewarded = load_correct_rewarded(paths)
-    block_id = load_block_id(paths)
-
-    spans = []
-    for block in np.unique(block_id[np.isfinite(block_id)]).astype(int):
-        in_block = block_id == block
-        if (in_block & correct_rewarded).any():
-            bins = np.flatnonzero(in_block)
-            spans.append((int(block), times[bins[0]], times[bins[-1]]))
-
-    return spans
-
-
-def load_bins(block, paths):
-    """Read the per-bin csvs this block's video needs, and size the trail."""
+def load_bins(paths):
+    """Read the per-bin csvs the video needs, and size the trail."""
     labels = paths.label_dir
     times = np.loadtxt(labels / 'bin_times.csv')
-    block_all_mask = load_block_id(paths) == block
-    block_mask = load_correct_rewarded(paths) & block_all_mask
 
     width = times[1] - times[0]
     trail_bins = round(TRAIL_S / width)
@@ -364,15 +337,22 @@ def load_bins(block, paths):
         patch_identified=np.loadtxt(labels / 'patch_identified.csv').astype(bool),
         correct=np.loadtxt(labels / 'correct.csv').astype(bool),
         rewarded=np.loadtxt(labels / 'rewarded.csv').astype(bool),
+        block_id=np.loadtxt(labels / 'block_id.csv'),
+        in_decision_region=np.loadtxt(labels / 'in_decision_region.csv').astype(bool),
         head_xy=maze_pixels(np.loadtxt(labels / 'head_positions.csv', delimiter=','),
                             paths.maze_png),
-        block_mask=block_mask,
-        block_all_mask=block_all_mask,
-        full_row=np.arange(len(times)),
-        block_row=np.where(block_mask, np.cumsum(block_mask) - 1, -1),
         width=width,
         trail_bins=trail_bins,
         trail_rgb=trail_ramp(trail_bins))
+
+
+def bin_rows(mask):
+    """Each bin's row in an embedding fitted on the bins `mask` selects, -1 if absent.
+
+    A masked embedding's row i is the i-th True entry of its mask -- see
+    run_umap.py -- so a bin's row is its rank among the set bins.
+    """
+    return np.where(mask, np.cumsum(mask) - 1, -1)
 
 
 def bin_at(bins, time_s):
@@ -425,35 +405,48 @@ class Layer:
 
 
 @dataclass
-class Layers:
-    """Every view: the rendered ones in the order the panels read them, then the
-    ones only written out."""
-    full: Layer
-    block: Layer
-    full_coloured: Layer
-    block_coloured: Layer
-    full_xy: Layer
-    block_xy: Layer
-    full_xy_coloured: Layer
-    block_xy_coloured: Layer
-    full_ports: Layer
-    block_ports: Layer
+class Column:
+    """One embedding, and the bins it was fitted on.
 
-    # Written out as interactive plots only; no panel reads these yet.
-    correct_rewarded: Layer
-    correct_rewarded_coloured: Layer
-    correct_rewarded_ports: Layer
-    block_all: Layer
-    block_all_coloured: Layer
-    block_all_ports: Layer
-    full_switch_stay: Layer
-    block_all_switch_stay: Layer
-    decision_region: Layer
-    decision_region_xy: Layer
+    `name` is the embedding's stem after umap_, as run_umap.py writes it, and
+    `mask` selects its rows from the per-bin labels, row i being the i-th True.
+    """
+    name: str
+    title: str
+    mask: np.ndarray
+
+    @property
+    def camera_key(self):
+        """The parameters.yaml entry every 3D view of this column shares."""
+        return f'{self.name}_camera'
+
+
+def grid_columns(bins):
+    """The eight columns of the grid, left to right."""
+    columns = [Column('full', 'Full session', np.ones(len(bins.times), dtype=bool)),
+               Column('correct_rewarded', 'Correct rewarded, all blocks',
+                      bins.correct & bins.rewarded)]
+    columns += [Column(f'block_{block}_all', f'Block {block}', bins.block_id == block)
+                for block in range(1, BLOCKS_SHOWN + 1)]
+    columns.append(Column('decision_region', 'Decision region', bins.in_decision_region))
+    return columns
+
+
+@dataclass
+class Grid:
+    """Every rendered view, and the ones only written out.
+
+    cells[c] holds column c's four views in VIEWS order, or is None where that
+    column's embedding does not exist. extras are written as interactive plots
+    but shown in no panel.
+    """
+    columns: list
+    cells: list
+    extras: list
 
     def all(self):
-        """Each layer once, in declaration order."""
-        return [getattr(self, f.name) for f in fields(self)]
+        """Each layer once: the grid column by column, then the extras."""
+        return [layer for views in self.cells if views for layer in views] + self.extras
 
 
 def report_labels(labels, points, what):
@@ -464,178 +457,74 @@ def report_labels(labels, points, what):
           f'{what} bins within {plots.TIME_RADIUS:g} s of a reward')
 
 
+def load_points(column, paths):
+    """A column's embedding, or None if run_umap.py did not write one."""
+    path = paths.emb_dir / f'umap_{column.name}.npy'
+    if not path.exists():
+        print(f'no {path.name}; {column.title} left blank')
+        return None
+
+    points = np.load(path)
+    assert len(points) == column.mask.sum(), (
+        f'{path.name} has {len(points)} rows but its mask selects '
+        f'{int(column.mask.sum())} bins -- re-run run_umap.py')
+    return points
+
+
+def column_views(column, points, bins, groups, cfg, port_colours):
+    """One column's four views, in VIEWS order, each rendered once.
+
+    Every label comes out of the per-bin files under the column's own mask, the
+    same one that selected its embedding's rows, so row i and label i are the
+    same bin. Only the plain view gets a pixel map, for the trail.
+    """
+    camera_key = column.camera_key
+    camera = read_camera(cfg, camera_key)
+    stem = f'umap_{column.name}'
+
+    labels = bins.time_nearest_reward[column.mask]
+    report_labels(labels, points, column.title)
+
+    plain, plain_background, plain_pixels = plots.panel_and_pixels(
+        points, column.title, camera, PANEL)
+    coloured = plots.coloured_figure(points, labels, column.title, camera, PANEL)
+    ports = plots.port_figure(points, bins.port_ids[column.mask], port_colours,
+                              column.title, camera, PANEL)
+    switch_stay = plots.switch_stay_figure(points, groups[column.mask],
+                                           column.title, camera, PANEL)
+
+    return [Layer(plain, plain_background, plain_pixels, f'{stem}_uncolored', camera_key)] + [
+        Layer(figure, plots.figure_image(figure, PANEL), name=f'{stem}_{view}',
+              camera_key=camera_key)
+        for view, figure in zip(VIEWS[1:], [coloured, ports, switch_stay])]
+
+
 def render_layers(bins, cfg, port_colours, paths):
     """Every embedding rendered once, with the pixel map its trail needs.
 
     These are the only kaleido renders in the whole run: a background is built
-    here and every frame then paints onto a copy of it.
-
-    The coloured views pair each bin with how far it sits from a reward. Those
-    labels were written for every bin in the session, so a block's own come out
-    under the same mask as its spikes, while the full session's pair with the
-    full embedding directly.
+    here and every frame then paints onto a copy of it. On a cold cache that is
+    five per column -- four views and the plain view's calibration figure.
     """
-    block = cfg['block']
-    block_title = f'Block {block}'
-    block_camera_key = f'block_{block}_cr_camera'
-    full_camera = read_camera(cfg, 'full_camera')
-    block_camera = read_camera(cfg, block_camera_key)
-
-    full_points = np.load(paths.emb_dir / 'umap_full.npy')
-    block_points = np.load(paths.emb_dir / f'umap_block_{block}_cr.npy')
-
-    full_figure, full_background, full_pixels = plots.panel_and_pixels(
-        full_points, FULL_TITLE, full_camera, PANEL)
-    block_figure, block_background, block_pixels = plots.panel_and_pixels(
-        block_points, block_title, block_camera, PANEL)
-
-    full_labels = bins.time_nearest_reward
-    block_labels = bins.time_nearest_reward[bins.block_mask]
-    report_labels(block_labels, block_points, 'block')
-    report_labels(full_labels, full_points, 'session')
-
-    # Same cameras and the same hidden axes as the plain views, so the two are
-    # comparable at a glance and only the colour differs. Expect a far paler
-    # picture from the session than from the block -- a block is correct
-    # rewarded trials, where almost every bin sits near a reward, while most of
-    # a session does not.
-    full_coloured = plots.coloured_figure(full_points, full_labels, FULL_TITLE,
-                                          full_camera, PANEL)
-    block_coloured = plots.coloured_figure(block_points, block_labels, block_title,
-                                           block_camera, PANEL)
-
-    # Flat views of the same two clouds, down the same pair of dimensions, so
-    # the block and the session are read the same way. The plain ones also get
-    # the pixel map their trail needs: a flat view has no camera, but it still
-    # has to be told where a point landed -- see umap_plots.fit_flat_projection.
-    full_xy_title = f'{FULL_TITLE} - xy projection'
-    block_xy_title = f'{block_title} - xy projection'
-
-    full_xy, full_xy_background, full_xy_pixels = plots.flat_panel_and_pixels(
-        full_points, XY, full_xy_title, PANEL)
-    block_xy, block_xy_background, block_xy_pixels = plots.flat_panel_and_pixels(
-        block_points, XY, block_xy_title, PANEL)
-
-    full_xy_coloured = plots.coloured_projection(full_points, full_labels, XY,
-                                                 full_xy_title, PANEL)
-    block_xy_coloured = plots.coloured_projection(block_points, block_labels, XY,
-                                                  block_xy_title, PANEL)
-
-    # Both clouds again, coloured by which port the mouse was at. The labels are
-    # per bin and spatial -- nearest port centre within a few pixels of the
-    # tracked position -- so unlike the per-trial reward labels they mark only
-    # the moments actually spent at a port.
-    block_ports = bins.port_ids[bins.block_mask]
-    full_port_figure = plots.port_figure(full_points, bins.port_ids, port_colours,
-                                         FULL_TITLE, full_camera, PANEL)
-    block_port_figure = plots.port_figure(block_points, block_ports, port_colours,
-                                          block_title, block_camera, PANEL)
-
-    print(f'{int((block_ports > 0).sum())} of {len(block_ports)} block bins at a port; '
-          f'{int((bins.port_ids > 0).sum())} of {len(bins.port_ids)} session bins')
-
-    # The correct rewarded bins of every block in one embedding, drawn three
-    # ways: plain, by reward time, and by port. Nothing here depends on the
-    # block, so each block's session builds the same three. No panel shows them
-    # yet, so they are built as figures and written out as interactive plots,
-    # but never rasterised: no kaleido render is spent on them. Their labels come
-    # out of the per-bin files under the same mask that selected the
-    # embedding's rows.
-    cr_mask = load_correct_rewarded(paths)
-    cr_points = np.load(paths.emb_dir / 'umap_correct_rewarded.npy')
-    cr_title = 'Correct rewarded, all blocks'
-    cr_camera_key = 'correct_rewarded_camera'
-    cr_camera = read_camera(cfg, cr_camera_key)
-
-    cr_labels = bins.time_nearest_reward[cr_mask]
-    cr_ports = bins.port_ids[cr_mask]
-    report_labels(cr_labels, cr_points, 'correct rewarded')
-
-    # The whole of this block -- every bin, gaps between trials included, not
-    # just its correct rewarded ones -- drawn the same three ways, and likewise
-    # written out only. Its own camera key, since its layout is its own fit and
-    # shares nothing with the _cr embedding's.
-    all_points = np.load(paths.emb_dir / f'umap_block_{block}_all.npy')
-    all_title = f'Block {block}, all bins'
-    all_camera_key = f'block_{block}_all_camera'
-    all_camera = read_camera(cfg, all_camera_key)
-
-    all_labels = bins.time_nearest_reward[bins.block_all_mask]
-    all_ports = bins.port_ids[bins.block_all_mask]
-    report_labels(all_labels, all_points, 'whole block')
-
     groups = switch_stay_groups(bins)
+    columns = grid_columns(bins)
 
-    # The bins whose head position lies between the two lines of the Maze lines
-    # section in embedding_and_labels.m, in their own fit, drawn plain in 3D and
-    # flat down the same dimensions as the other xy views. Written out only.
-    dr_points = np.load(paths.emb_dir / 'umap_decision_region.npy')
-    dr_title = 'Decision region'
-    dr_camera_key = 'decision_region_camera'
-    dr_camera = read_camera(cfg, dr_camera_key)
+    cells, extras = [], []
+    for column in columns:
+        points = load_points(column, paths)
+        if points is None:
+            cells.append(None)
+            continue
 
-    # The coloured and port figures are rendered as well as written out, because
-    # they are panels now. One more kaleido render each on a cold cache, nothing
-    # on a warm one.
-    return Layers(
-        full=Layer(full_figure, full_background, full_pixels,
-                   'umap_full', 'full_camera'),
-        block=Layer(block_figure, block_background, block_pixels,
-                    f'umap_block_{block}_cr_uncolored', block_camera_key),
-        full_coloured=Layer(full_coloured,
-                            plots.figure_image(full_coloured, PANEL),
-                            name='umap_full_colored', camera_key='full_camera'),
-        block_coloured=Layer(block_coloured,
-                             plots.figure_image(block_coloured, PANEL),
-                             name=f'umap_block_{block}_cr_colored',
-                             camera_key=block_camera_key),
-        full_xy=Layer(full_xy, full_xy_background, full_xy_pixels,
-                      'umap_full_xy_uncolored'),
-        block_xy=Layer(block_xy, block_xy_background, block_xy_pixels,
-                       f'umap_block_{block}_cr_xy_uncolored'),
-        full_xy_coloured=Layer(full_xy_coloured,
-                               plots.figure_image(full_xy_coloured, PANEL),
-                               name='umap_full_xy_colored'),
-        block_xy_coloured=Layer(block_xy_coloured,
-                                plots.figure_image(block_xy_coloured, PANEL),
-                                name=f'umap_block_{block}_cr_xy_colored'),
-        full_ports=Layer(full_port_figure,
-                         plots.figure_image(full_port_figure, PANEL),
-                         name='umap_full_ports'),
-        block_ports=Layer(block_port_figure,
-                          plots.figure_image(block_port_figure, PANEL),
-                          name=f'umap_block_{block}_cr_ports'),
-        correct_rewarded=Layer(
-            plots.plain_figure(cr_points, cr_title, cr_camera, PANEL), None,
-            name='umap_correct_rewarded_uncolored', camera_key=cr_camera_key),
-        correct_rewarded_coloured=Layer(
-            plots.coloured_figure(cr_points, cr_labels, cr_title, cr_camera, PANEL), None,
-            name='umap_correct_rewarded_colored', camera_key=cr_camera_key),
-        correct_rewarded_ports=Layer(
-            plots.port_figure(cr_points, cr_ports, port_colours, cr_title, cr_camera, PANEL),
-            None, name='umap_correct_rewarded_ports'),
-        block_all=Layer(
-            plots.plain_figure(all_points, all_title, all_camera, PANEL), None,
-            name=f'umap_block_{block}_all_uncolored', camera_key=all_camera_key),
-        block_all_coloured=Layer(
-            plots.coloured_figure(all_points, all_labels, all_title, all_camera, PANEL), None,
-            name=f'umap_block_{block}_all_colored', camera_key=all_camera_key),
-        block_all_ports=Layer(
-            plots.port_figure(all_points, all_ports, port_colours, all_title, all_camera, PANEL),
-            None, name=f'umap_block_{block}_all_ports'),
-        full_switch_stay=Layer(
-            plots.switch_stay_figure(full_points, groups, FULL_TITLE, full_camera, PANEL),
-            None, name='umap_full_switch_stay', camera_key='full_camera'),
-        block_all_switch_stay=Layer(
-            plots.switch_stay_figure(all_points, groups[bins.block_all_mask],
-                                     all_title, all_camera, PANEL),
-            None, name=f'umap_block_{block}_all_switch_stay', camera_key=all_camera_key),
-        decision_region=Layer(
-            plots.plain_figure(dr_points, dr_title, dr_camera, PANEL), None,
-            name='umap_decision_region_uncolored', camera_key=dr_camera_key),
-        decision_region_xy=Layer(
-            plots.plain_projection(dr_points, XY, f'{dr_title} - xy projection', PANEL),
-            None, name='umap_decision_region_xy_uncolored'))
+        cells.append(column_views(column, points, bins, groups, cfg, port_colours))
+
+        # The decision region flat too, as it was before the grid; written only.
+        if column.name == 'decision_region':
+            extras.append(Layer(
+                plots.plain_projection(points, XY, f'{column.title} - xy projection', PANEL),
+                None, name='umap_decision_region_xy_uncolored'))
+
+    return Grid(columns=columns, cells=cells, extras=extras)
 
 
 # --------------------------------------------------------------------------
@@ -647,7 +536,7 @@ def render_layers(bins, cfg, port_colours, paths):
 # painting itself.
 
 def maze_panel(bins, maze_png):
-    """Panel 11: the maze, with the mouse's position and its recent trail.
+    """The maze, with the mouse's position and its recent trail.
 
     Drawn on a copy, so the trail lasts one frame instead of accumulating, and
     oldest first so the current position sits on top where dots overlap. Bins
@@ -705,18 +594,17 @@ def embedding_panel(layer, bins, bin_to_row):
     return draw
 
 
-def info_panel(bins, data_file, block):
-    """Panel 12: in words, what the other panels are showing at this instant.
+def info_panel(bins, data_file):
+    """In words, what the other panels are showing at this instant.
 
     The session name and the label beside each row are baked into the background
-    once, so a frame only has to add the three values -- which is what keeps
-    this panel to about a millisecond, the whole reason it is PIL text rather
-    than a plotly figure.
+    once, so a frame only has to add the values -- which is what keeps this
+    panel to about a millisecond, the whole reason it is PIL text rather than a
+    plotly figure.
 
-    "included" is read straight off the block mask, so it answers exactly the
-    question the block panel poses -- is this bin one of the ones plotted there
-    -- rather than the looser question of whether the trial belongs to the block
-    at all. A bin between trials has no trial number.
+    "block" is block_id, so a bin between trials reads the block of the trial
+    before it, as every block column counts it. A bin between trials has no
+    trial number.
 
     "reward size" reads bins.time_nearest_reward, which is signed (negative
     before a reward, positive after -- see embedding_and_labels.m), so 0 marks
@@ -727,7 +615,7 @@ def info_panel(bins, data_file, block):
     unconditionally would show a reward's size long before or after it was
     actually dispensed.
     """
-    labels = ['time', 'trial', f'block {block}', 'reward size']
+    labels = ['time', 'trial', 'block', 'reward size']
     font = placeholder_font(PANEL // 18)
 
     background = Image.new('RGB', (PANEL, PANEL), PLACEHOLDER_BG)
@@ -751,13 +639,14 @@ def info_panel(bins, data_file, block):
 
         index = bin_at(bins, time_s)
         trial = bins.trial_ids[index]
+        block = bins.block_id[index]
 
         reward_offset = bins.time_nearest_reward[index]
         dispensing = 0 <= reward_offset <= REWARD_DISPENSING_S   # NaN compares False
 
         values = [f'{bins.times[index]:.2f} s',
                   '-' if np.isnan(trial) else f'{int(trial)}',
-                  'included' if bins.block_mask[index] else 'excluded',
+                  '-' if np.isnan(block) else f'{int(block)}',
                   f'{int(bins.reward_size_ms[index])} ms' if dispensing else 'None']
 
         for row, value in enumerate(values):
@@ -769,36 +658,96 @@ def info_panel(bins, data_file, block):
     return draw
 
 
-def build_panels(bins, layers, data_file, block, maze_png):
-    """The grid, row-major from 1 in the top left, as functions of the frame time.
+def behaviour_panel(bins, paths):
+    """behaviour_plot.m's figure, BEHAVIOUR_SPAN panels wide, with a line at
+    the current trial.
 
-    The placeholder fallback goes unused while all twelve are filled; it is what
-    a thirteenth panel would fall back to if ROWS grew.
+    The figure is scaled to fit and centred, as the maze is, and the line placed
+    from behaviour_axis.csv, which that script writes beside the PNG: for each
+    trial it plots, the trial's SessionTrial and the pixel column it sits at,
+    plus the top and bottom of the axes. The figure's x axis counts the trials
+    it plotted, 1 to n, rather than SessionTrial, and the two part company
+    wherever a trial was dropped, so the line is looked up by SessionTrial.
+
+    A bin between trials holds the line at the trial before it, as block_id
+    does; bins before the first trial hold it at the first.
     """
-    live = {
-        1: embedding_panel(layers.full, bins, bins.full_row),
-        2: embedding_panel(layers.block, bins, bins.block_row),
-        3: embedding_panel(layers.full_xy, bins, bins.full_row),
-        4: embedding_panel(layers.block_xy, bins, bins.block_row),
-        5: static_panel(layers.full_coloured.background),
-        6: static_panel(layers.block_coloured.background),
-        7: static_panel(layers.full_xy_coloured.background),
-        8: static_panel(layers.block_xy_coloured.background),
-        9: static_panel(layers.full_ports.background),
-        10: static_panel(layers.block_ports.background),
-        11: maze_panel(bins, maze_png),
-        12: info_panel(bins, data_file, block),
-    }
-    return [live[n] if n in live else placeholder(n)
-            for n in range(1, COLUMNS * ROWS + 1)]
+    width = BEHAVIOUR_SPAN * PANEL
+    png = paths.fig_dir / 'behaviour.png'
+    axis_path = paths.fig_dir / 'behaviour_axis.csv'
+    if not (png.exists() and axis_path.exists()):
+        print(f'no {png.name} and {axis_path.name} in {paths.fig_dir} -- run '
+              'behaviour_plot.m; behaviour panel left blank')
+        return placeholder('no behaviour plot', width)
+
+    image = Image.open(png).convert('RGB')
+    background = np.asarray(ImageOps.pad(image, (width, PANEL), color=BACKGROUND))
+    source_width, _, new_width, _, offset_x, offset_y = pad_geometry(image.size, (width, PANEL))
+    scale = new_width / source_width
+
+    axis = np.genfromtxt(axis_path, delimiter=',', names=True)
+    session_trials = axis['session_trial']
+
+    trial = bins.trial_ids
+    known = np.isfinite(trial)
+    last_known = np.maximum.accumulate(np.where(known, np.arange(len(trial)), -1))
+    trial = trial[np.where(last_known >= 0, last_known, np.flatnonzero(known)[0])]
+
+    order = np.argsort(session_trials)
+    found = order[np.clip(np.searchsorted(session_trials[order], trial), 0, len(order) - 1)]
+    assert np.array_equal(session_trials[found], trial), \
+        f'{axis_path.name} is missing trials the bins name -- re-run behaviour_plot.m'
+
+    line_x = np.round(axis['x_px'][found] * scale + offset_x).astype(int) - BEHAVIOUR_LINE_WIDTH // 2
+    top = round(axis['y_top_px'][0] * scale + offset_y)
+    bottom = round(axis['y_bottom_px'][0] * scale + offset_y)
+    colour = ImageColor.getrgb(BEHAVIOUR_LINE)
+
+    def draw(time_s):
+        frame = background.copy()
+        x = line_x[bin_at(bins, time_s)]
+        frame[top:bottom, max(x, 0):x + BEHAVIOUR_LINE_WIDTH] = colour
+        return frame
+
+    return draw
+
+
+def build_panels(bins, grid, data_file, paths):
+    """The grid, as rows of functions of the frame time, top row first.
+
+    Each panel function hands back an image PANEL high and as many panels wide
+    as it spans; a row's spans must add up to COLUMNS, which is checked here
+    rather than discovered as a shape error on the first frame.
+    """
+    rows = []
+    for view_index in range(len(VIEWS)):
+        row = []
+        for column, views in zip(grid.columns, grid.cells):
+            if views is None:
+                row.append((1, placeholder(f'no {column.title}')))
+            elif view_index == 0:
+                row.append((1, embedding_panel(views[0], bins, bin_rows(column.mask))))
+            else:
+                row.append((1, static_panel(views[view_index].background)))
+        rows.append(row)
+
+    last = [(1, info_panel(bins, data_file)),
+            (1, maze_panel(bins, paths.maze_png)),
+            (BEHAVIOUR_SPAN, behaviour_panel(bins, paths))]
+    filled = sum(span for span, _ in last)
+    rows.append(last + [(1, placeholder('')) for _ in range(COLUMNS - filled)])
+
+    assert len(rows) == ROWS, f'{len(rows)} rows built but ROWS is {ROWS}'
+    for number, row in enumerate(rows, start=1):
+        spans = sum(span for span, _ in row)
+        assert spans == COLUMNS, f'row {number} spans {spans} panels, not {COLUMNS}'
+
+    return [[panel for _, panel in row] for row in rows]
 
 
 def compose(panels, time_s):
-    """One video frame: every panel drawn, then tiled into the grid."""
-    drawn = [panel(time_s) for panel in panels]
-    rows = [np.hstack(drawn[row * COLUMNS:(row + 1) * COLUMNS])
-            for row in range(ROWS)]
-    return np.vstack(rows)
+    """One video frame: every panel drawn, each row tiled, the rows stacked."""
+    return np.vstack([np.hstack([panel(time_s) for panel in row]) for row in panels])
 
 
 # --------------------------------------------------------------------------
@@ -856,8 +805,8 @@ class Session:
     cfg: dict
     paths: object                                # paths.SessionPaths
     bins: Bins
-    layers: Layers
-    panels: list
+    grid: Grid
+    panels: list                                 # rows of panel functions
 
 
 def frame_size():
@@ -880,12 +829,11 @@ def load_session(params):
     width, height = frame_size()
     print(f'frame {width}x{height}: {COLUMNS}x{ROWS} panels of {PANEL}x{PANEL}')
 
-    bins = load_bins(cfg['block'], paths)
-    layers = render_layers(bins, cfg, params['port_colors'], paths)
-    panels = build_panels(bins, layers, params['data_file'], cfg['block'],
-                          paths.maze_png)
+    bins = load_bins(paths)
+    grid = render_layers(bins, cfg, params['port_colors'], paths)
+    panels = build_panels(bins, grid, params['data_file'], paths)
 
-    return Session(cfg=cfg, paths=paths, bins=bins, layers=layers, panels=panels)
+    return Session(cfg=cfg, paths=paths, bins=bins, grid=grid, panels=panels)
 
 
 def write_interactive_plots(session):
@@ -895,7 +843,7 @@ def write_interactive_plots(session):
     position to paste into parameters.yaml.
     """
     session.paths.umap_dir.mkdir(parents=True, exist_ok=True)
-    for layer in session.layers.all():
+    for layer in session.grid.all():
         path = session.paths.umap_dir / f'{layer.name}.html'
         print(f'wrote {plots.write_html(layer.figure, path, layer.camera_key, CAMERA_ZOOM)}')
 
@@ -903,13 +851,13 @@ def write_interactive_plots(session):
 def write_video(session, out_path=None):
     """Paint the trail onto the cached backgrounds, frame by frame, and encode.
 
-    Without an out_path, the video lands as block_video.mp4 in the session's
+    Without an out_path, the video lands as session_video.mp4 in the session's
     figures folder.
     """
     cfg, bins = session.cfg, session.bins
     if out_path is None:
         session.paths.fig_dir.mkdir(parents=True, exist_ok=True)
-        out_path = session.paths.fig_dir / 'block_video.mp4'
+        out_path = session.paths.fig_dir / 'session_video.mp4'
     start, duration, fps = cfg['start_time_s'], cfg['duration_s'], cfg['fps']
 
     in_window = (bins.times >= start) & (bins.times < start + duration)

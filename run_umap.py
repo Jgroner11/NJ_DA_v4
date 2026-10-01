@@ -18,13 +18,16 @@ entry of its mask, so the matching times and positions are bin_times.csv[mask]
 and head_positions.csv[mask].
 
 Fits are cached by content, so re-running does not refit anything whose inputs
-and parameters are unchanged. UMAP is not seeded here, so the cache is also what
-keeps an embedding stable from run to run — delete .cache/ to force fresh fits.
+and parameters are unchanged. The cache holds each fitted UMAP object, not just
+its coordinates, so a cached fit can still place new bins with UMAP.transform.
+UMAP is not seeded here, so the cache is also what keeps an embedding stable
+from run to run — delete .cache/umap_*.joblib to force fresh fits.
 """
 
 import hashlib
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 import umap
@@ -139,8 +142,11 @@ def selections(n_bins):
     return found
 
 
-def embedding_for(rows, key_source):
-    """Fit UMAP on these rows, or reuse a cached fit of the same inputs.
+def model_for(rows, key_source):
+    """The UMAP fitted on these rows, reused from the cache if it holds one.
+
+    The whole fitted object is cached, so its embedding_ is the embedding and
+    its transform places bins it was not fitted on into that same space.
 
     The key covers the spikes file's contents, which rows were selected (the
     mask's digest, or the word 'full'), and every UMAP parameter. A re-export,
@@ -152,19 +158,19 @@ def embedding_for(rows, key_source):
     key = hashlib.sha256(
         (key_source + repr(sorted(UMAP_PARAMS.items()))).encode()
     ).hexdigest()[:16]
-    cache_path = CACHE_DIR / f'umap_{key}.npy'
+    cache_path = CACHE_DIR / f'umap_{key}.joblib'
 
     if cache_path.exists():
-        print(f'  reusing cached embedding: {cache_path}')
-        return np.load(cache_path)
+        print(f'  reusing cached fit: {cache_path}')
+        return joblib.load(cache_path)
 
-    print(f'  no cached embedding for these inputs — fitting UMAP on {rows.shape[0]} bins...')
-    embedding = umap.UMAP(**UMAP_PARAMS).fit_transform(rows)
+    print(f'  no cached fit for these inputs — fitting UMAP on {rows.shape[0]} bins...')
+    model = umap.UMAP(**UMAP_PARAMS).fit(rows)
 
     CACHE_DIR.mkdir(exist_ok=True)
-    np.save(cache_path, embedding)
-    print(f'  cached embedding: {cache_path}')
-    return embedding
+    joblib.dump(model, cache_path)
+    print(f'  cached fit: {cache_path}')
+    return model
 
 
 spikes, spikes_digest = load_spikes()
@@ -185,7 +191,7 @@ for name, mask, selector in targets:
         print(f'  only {n_selected} bins — skipping, need at least {MIN_BINS}')
         continue
 
-    embedding = embedding_for(spikes[mask], spikes_digest + selector)
+    embedding = model_for(spikes[mask], spikes_digest + selector).embedding_
 
     out_path = OUT_DIR / f'umap_{name}.npy'
     np.save(out_path, embedding)

@@ -224,6 +224,34 @@ line_key.Position(2) = block_key.Position(2) - legend_gap - line_key.Position(4)
 if ~isfolder(fig_dir)
     mkdir(fig_dir);
 end
-exportgraphics(fig, fullfile(fig_dir, 'behaviour.png'));
+
+% 'Padding', 'figure' keeps the whole figure rather than cropping to what is
+% drawn on it, so the PNG is the figure scaled by one factor and the axes land
+% where they were placed above -- which the trial axis below depends on.
+png_path = fullfile(fig_dir, 'behaviour.png');
+exportgraphics(fig, png_path, 'Padding', 'figure', 'Resolution', 192);
+
+%% Trial axis, for the video
+% video.py draws a line on this PNG at the current trial, so it needs the
+% pixel column each trial sits at. The scale is read back off the saved file
+% rather than assumed from the resolution, and checked to be the same both
+% ways. Figure pixels count up from the bottom and image rows down from the
+% top, hence the flip. The trial axis counts the plotted trials 1..n rather
+% than SessionTrial, and the two part company wherever a trial was dropped, so
+% each row pairs a trial's SessionTrial with its column. The top and bottom of
+% the axes -- the port strip's top edge, the percentages' bottom -- are where
+% the line starts and stops, repeated on every row to keep this one table.
+png_info = imfinfo(png_path);
+scale = png_info.Width / fig_size(1);
+assert(abs(png_info.Height / fig_size(2) - scale) < 0.01, ...
+    'behaviour.png is not the whole figure at one scale, so its trial axis cannot be placed');
+
+x_px = scale * (ax_rate.Position(1) + trial_x / n_trials * ax_rate.Position(3));
+y_top_px = scale * (fig_size(2) - sum(ax_port.Position([2 4]))) * ones(n_trials, 1);
+y_bottom_px = scale * (fig_size(2) - ax_rate.Position(2)) * ones(n_trials, 1);
+
+writetable(table(trials.SessionTrial, x_px, y_top_px, y_bottom_px, ...
+                 'VariableNames', {'session_trial', 'x_px', 'y_top_px', 'y_bottom_px'}), ...
+           fullfile(fig_dir, 'behaviour_axis.csv'));
 
 
