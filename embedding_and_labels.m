@@ -1,5 +1,5 @@
 %% Load data (run once)
-P = yaml.loadFile('parameters.yaml');
+P = load_params();
 
 % Reloaded when data_file changes, so switching session cannot silently reuse
 % the last one's data left in the workspace.

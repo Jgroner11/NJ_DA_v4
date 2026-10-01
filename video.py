@@ -17,9 +17,10 @@ fifth is fitted by run_umap.py but never shown; a column whose embedding does
 not exist -- a session with fewer blocks, or a selection too small to fit --
 is left as blank panels.
 
-Only the plain row carries the moving trail, and only for bins the column's
-embedding holds: a column's trail drops out while the mouse is somewhere that
-embedding was not fitted on. The coloured panels are static, because their
+Only the plain row carries the moving trail. Where a column's embedding holds
+the current bin, the trail dot is on the Turbo ramp at its point; where it does
+not, it is magenta, at where run_umap.py placed that bin with UMAP.transform,
+so every column is trailed throughout. The coloured panels are static, because their
 colorbars and legends shift the plot area, so the fitted pixel maps describe the
 plain panels' layout rather than theirs.
 
@@ -36,7 +37,9 @@ of bins, so the same moment is picked out in the maze and in every embedding at
 once. Age shows twice over: the dot cools along a colour scale and fades in
 opacity at the same time.
 
-The window comes from start_time_s / duration_s / fps in parameters.yaml.
+The window comes from start_time_s / duration_s in parameters.yaml. There is
+one frame per bin: nothing on screen changes within a bin, so a higher frame
+rate would only encode the same picture several times over.
 
 Every panel is a cached background with dots painted on in numpy, so no frame
 re-renders anything through plotly. Re-rendering the embeddings per frame was
@@ -81,6 +84,7 @@ BLOCKS_SHOWN = 5                                 # block columns, B1 to this
 BEHAVIOUR_SPAN = 3                               # panels the behaviour figure spans
 BEHAVIOUR_LINE = '#52514e'                       # the current-trial line on it
 BEHAVIOUR_LINE_WIDTH = 2                         # in pixels
+ENCODER_PRESET = 'veryfast'                      # x264 speed over file size; 'medium' is its default
 
 PLACEHOLDER_BG = '#ffffff'                       # an empty panel
 PLACEHOLDER_INK = '#9a9892'                      # and the number written on it
@@ -97,7 +101,8 @@ TRAIL_HOT = 0.85                                 # where on the scale the newest
 TRAIL_COLD = 0.20                                # and the oldest
 DOT_RADIUS = 3                                   # trail dot radius on the maze, in pixels
 UMAP_DOT_RADIUS = 4                             # and on the embedding panels
-TRAIL_S = 6.0                                    # seconds of trail drawn behind the mouse
+TRANSFORMED_COLOUR = '#ff00ff'                   # trail dots for bins placed by UMAP.transform
+TRAIL_S = 12.0                                   # seconds of trail drawn behind the mouse
 MIN_ALPHA = 0.1                                  # opacity of its oldest dot
 CAMERA_ZOOM = 0.7                                # below 1 pulls the viewer in
 DEFAULT_EYE = dict(x=1.25, y=1.25, z=1.25)       # plotly's own default 3D eye
@@ -359,9 +364,11 @@ def bin_at(bins, time_s):
     """Index of the bin covering this frame time.
 
     A binary search against the bin centres rather than arithmetic on the frame
-    time: at 30 fps with 100 ms bins every third frame lands exactly on a bin
+    time: with one frame per bin every frame time lands exactly on a bin
     boundary, and there time_s / bins.width picks a side on floating-point error
-    alone, so neighbouring frames can jump back and forth by a bin.
+    alone, so neighbouring frames could repeat or skip a bin. Against the
+    centres, a boundary sits half a bin from either side's centre, far beyond
+    any rounding.
     """
     return min(int(np.searchsorted(bins.times, time_s)), len(bins.times) - 1)
 
@@ -396,12 +403,18 @@ class Layer:
     `camera_key` is the parameters.yaml entry a 3D view's readout reports, and
     None for a flat projection, which has no camera to report. `background` is
     None for a view no panel shows, which is written out but never rasterised.
+
+    `transformed_pixels` is one row per bin of the session: where each bin the
+    embedding was not fitted on lands when run_umap.py places it with
+    UMAP.transform, NaN for the fitted bins. None where there is nothing to
+    place -- the full embedding, or a column with no transform written.
     """
     figure: object
     background: np.ndarray
     pixels: np.ndarray = None
     name: str = ''                               # stem of its html file
     camera_key: str = None
+    transformed_pixels: np.ndarray = None
 
 
 @dataclass
@@ -471,12 +484,35 @@ def load_points(column, paths):
     return points
 
 
-def column_views(column, points, bins, groups, cfg, port_colours):
+def load_transformed(column, paths):
+    """Where run_umap.py placed the bins this column was not fitted on, or None.
+
+    One row per bin, NaN on the fitted bins. None for the full column, which
+    leaves nothing out, or if the file is missing -- then the column's trail
+    just drops out where it has no point, as it did before transforms.
+    """
+    if column.mask.all():
+        return None
+
+    path = paths.emb_dir / f'umap_{column.name}_transformed.npy'
+    if not path.exists():
+        print(f'no {path.name}; {column.title} trail drops out off its embedding')
+        return None
+
+    transformed = np.load(path)
+    assert len(transformed) == len(column.mask), (
+        f'{path.name} has {len(transformed)} rows for {len(column.mask)} bins '
+        '-- re-run run_umap.py')
+    return transformed
+
+
+def column_views(column, points, transformed, bins, groups, cfg, port_colours):
     """One column's four views, in VIEWS order, each rendered once.
 
     Every label comes out of the per-bin files under the column's own mask, the
     same one that selected its embedding's rows, so row i and label i are the
-    same bin. Only the plain view gets a pixel map, for the trail.
+    same bin. Only the plain view gets a pixel map, for the trail, and with it
+    the pixels of any transformed bins, through the same projection.
     """
     camera_key = column.camera_key
     camera = read_camera(cfg, camera_key)
@@ -485,15 +521,17 @@ def column_views(column, points, bins, groups, cfg, port_colours):
     labels = bins.time_nearest_reward[column.mask]
     report_labels(labels, points, column.title)
 
-    plain, plain_background, plain_pixels = plots.panel_and_pixels(
+    plain, plain_background, plain_pixels, matrix = plots.panel_and_pixels(
         points, column.title, camera, PANEL)
+    transformed_pixels = None if transformed is None else plots.project(matrix, transformed)
     coloured = plots.coloured_figure(points, labels, column.title, camera, PANEL)
     ports = plots.port_figure(points, bins.port_ids[column.mask], port_colours,
                               column.title, camera, PANEL)
     switch_stay = plots.switch_stay_figure(points, groups[column.mask],
                                            column.title, camera, PANEL)
 
-    return [Layer(plain, plain_background, plain_pixels, f'{stem}_uncolored', camera_key)] + [
+    return [Layer(plain, plain_background, plain_pixels, f'{stem}_uncolored', camera_key,
+                  transformed_pixels)] + [
         Layer(figure, plots.figure_image(figure, PANEL), name=f'{stem}_{view}',
               camera_key=camera_key)
         for view, figure in zip(VIEWS[1:], [coloured, ports, switch_stay])]
@@ -516,7 +554,8 @@ def render_layers(bins, cfg, port_colours, paths):
             cells.append(None)
             continue
 
-        cells.append(column_views(column, points, bins, groups, cfg, port_colours))
+        cells.append(column_views(column, points, load_transformed(column, paths),
+                                  bins, groups, cfg, port_colours))
 
         # The decision region flat too, as it was before the grid; written only.
         if column.name == 'decision_region':
@@ -572,18 +611,38 @@ def embedding_panel(layer, bins, bin_to_row):
     projected to. Painting on top means a trail dot geometrically behind the
     cloud still shows, where plotly would have hidden it -- which is what you
     want from a marker you are trying to follow.
+
+    A trail bin the embedding was fitted on takes its colour from the trail's
+    Turbo ramp, at its own point. One it was not fitted on is TRANSFORMED_COLOUR
+    instead, at where UMAP.transform placed it, with the same opacity for its
+    age -- so the trail runs unbroken, still fades, and its colour alone says
+    which bins are really in the embedding: Turbo holds no magenta. A
+    transformed bin can land outside the fitted cloud's scene, and so off the
+    panel; its dot is pinned to the nearest point on the panel's edge rather
+    than lost. Without a transform, such bins are skipped and the trail drops
+    out there.
     """
     dot_dy, dot_dx = disc_offsets(UMAP_DOT_RADIUS)
+    transformed_colour = np.array(ImageColor.getrgb(TRANSFORMED_COLOUR), dtype=float)
 
     def draw(time_s):
         frame = layer.background.copy()
 
         indices, alphas, colours = trail(bins, time_s)
         rows = bin_to_row[indices]
-        present = rows >= 0          # a trail bin outside this block has no point
 
-        for row, alpha, colour in zip(rows[present], alphas[present], colours[present]):
-            x, y = layer.pixels[row]
+        for index, row, alpha, colour in zip(indices, rows, alphas, colours):
+            if row >= 0:
+                x, y = layer.pixels[row]
+            elif layer.transformed_pixels is not None:
+                x, y = layer.transformed_pixels[index]
+                if not (np.isfinite(x) and np.isfinite(y)):
+                    continue
+                x, y = min(max(x, 0), PANEL - 1), min(max(y, 0), PANEL - 1)
+                colour = transformed_colour
+            else:
+                continue
+
             dots = np.clip(round(y) + dot_dy, 0, PANEL - 1)
             cols = np.clip(round(x) + dot_dx, 0, PANEL - 1)
             frame[dots, cols] = np.round(frame[dots, cols] * (1 - alpha)
@@ -848,30 +907,75 @@ def write_interactive_plots(session):
         print(f'wrote {plots.write_html(layer.figure, path, layer.camera_key, CAMERA_ZOOM)}')
 
 
+def frame_rate(bins):
+    """Frames per second: one per bin.
+
+    Everything a frame shows -- every trail, the maze, the behaviour line, the
+    info panel's values -- is a function of the current bin alone, so frames
+    between bin boundaries would be exact repeats. Rounded to the microsecond
+    so a bin width read off bin_times.csv as 0.09999999 still gives 10.
+    """
+    return round(1 / bins.width, 6)
+
+
+def trial_ends(bins):
+    """Whether each bin is the last bin of its trial.
+
+    A trial's last bin is one in a trial whose next bin is in a different trial
+    or between trials; the session's final bin counts if it is in a trial.
+    """
+    trial = bins.trial_ids
+    next_trial = np.append(trial[1:], np.nan)
+    return np.isfinite(trial) & (next_trial != trial)   # NaN != anything
+
+
 def write_video(session, out_path=None):
     """Paint the trail onto the cached backgrounds, frame by frame, and encode.
 
     Without an out_path, the video lands as session_video.mp4 in the session's
     figures folder.
+
+    Every frame that lands on a trial's last bin is also saved whole as a PNG in
+    the session's trial_ends folder, named for the trial's SessionTrial: the
+    frame exactly as the video shows it, its trail the usual TRAIL_S seconds,
+    so a short trial's PNG carries the end of the one before it and a long
+    trial's is cut off at its start. Only trials inside the window are saved;
+    frames past the end of the session all repeat the final bin, so each bin is
+    saved at most once.
     """
     cfg, bins = session.cfg, session.bins
     if out_path is None:
         session.paths.fig_dir.mkdir(parents=True, exist_ok=True)
         out_path = session.paths.fig_dir / 'session_video.mp4'
-    start, duration, fps = cfg['start_time_s'], cfg['duration_s'], cfg['fps']
+    start, duration, fps = cfg['start_time_s'], cfg['duration_s'], frame_rate(bins)
 
     in_window = (bins.times >= start) & (bins.times < start + duration)
     print(f'{in_window.sum()} bins in the {duration:g} s window from {start:g} s')
 
     n_frames = round(duration * fps)
 
+    is_trial_end = trial_ends(bins)
+    session.paths.trial_end_dir.mkdir(parents=True, exist_ok=True)
+    saved = set()
+
     # macro_block_size=1 keeps the frame at exactly the grid's size; the default
     # of 16 silently rescales to the next multiple of 16.
     with _SuppressBenignFfmpegWarning():
         with imageio.get_writer(out_path, fps=fps, codec='libx264', quality=8,
-                                macro_block_size=1) as writer:
+                                macro_block_size=1,
+                                ffmpeg_params=['-preset', ENCODER_PRESET]) as writer:
             for i in range(n_frames):
-                writer.append_data(compose(session.panels, start + i / fps))
+                time_s = start + i / fps
+                frame = compose(session.panels, time_s)
+                writer.append_data(frame)
 
-    print(f'wrote {out_path}  ({n_frames} frames at {fps} fps, {n_frames / fps:.1f} s)')
+                index = bin_at(bins, time_s)
+                if is_trial_end[index] and index not in saved:
+                    saved.add(index)
+                    trial = int(bins.trial_ids[index])
+                    Image.fromarray(frame).save(
+                        session.paths.trial_end_dir / f'trial_{trial:04d}.png')
+
+    print(f'wrote {out_path}  ({n_frames} frames at {fps:g} fps, {n_frames / fps:.1f} s; '
+          f'{len(saved)} trial ends saved)')
     return out_path

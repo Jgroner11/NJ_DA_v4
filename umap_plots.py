@@ -617,15 +617,18 @@ def project(matrix, points):
 def panel_and_pixels(points, title, camera, size):
     """Everything a video panel needs from one embedding.
 
-    Returns the figure, its rasterised background, and the pixel each point
-    occupies in that background. Two kaleido renders happen here -- the panel
-    itself and the calibration figure behind fit_projection -- and they are the
-    only ones; every frame after this is numpy.
+    Returns the figure, its rasterised background, the pixel each point
+    occupies in that background, and the projection matrix that put it there.
+    The matrix is a fixed camera on fixed scene ranges, so it places any other
+    3D point in the same background too -- bins transformed into this embedding
+    included. Two kaleido renders happen here -- the panel itself and the
+    calibration figure behind fit_projection -- and they are the only ones;
+    every frame after this is numpy.
     """
     figure = plain_figure(points, title, camera, size)
     background = figure_image(figure, size)
-    pixels = project(fit_projection(points, title, camera, size), points)
-    return figure, background, pixels
+    matrix = fit_projection(points, title, camera, size)
+    return figure, background, project(matrix, points), matrix
 
 
 # Injected into the interactive HTML by write_html. Plotly substitutes the

@@ -7,31 +7,35 @@ behaviour_plot.m the behaviour figure:
     python main.py
     python main.py --end 600   # only clips starting before 600 s, for a quick run
 
-The session, the cameras and the frame rate come from parameters.yaml. The
-window does not: the sweep below sets it per clip, so the start_time_s and
-duration_s written in the file are only what a single hand-run would have used,
-and are overwritten here.
+The session and the cameras come from parameters.yaml. The window does not: the
+sweep below sets it per clip, so the start_time_s and duration_s written in the
+file are only what a single hand-run would have used, and are overwritten here.
 
 Every window is rendered, including the stretches where the mouse was getting
 the task wrong -- it is the incorrect trajectories that are worth watching.
-Every block is on screen in every clip, so a column's trail simply drops out
-while the mouse is somewhere that column's embedding was not fitted on.
+Every block is on screen in every clip. While the mouse is somewhere a column's
+embedding was not fitted on, that column's trail carries on in magenta, at
+where run_umap.py placed those bins with UMAP.transform.
+
+Clips are rendered one after another, each frame after the last. Running
+several clips at once in separate processes was tried and measured no faster:
+one clip's x264 encoder already keeps every core busy.
 
 Everything lands under figures/<session>/ -- see paths.py. The clips go into
-clips/, in one folder named for the sweep, so a second sweep at other lengths
+clips/, in one folder named for the sweep, so a second sweep at another length
 sits beside the first rather than mixing into it. The interactive plots go into
-umap/, written once before the first clip is rendered.
+umap/, written once before the first clip is rendered. Each clip also saves the
+frame at every trial end it passes through into trial_ends/, so a trial is only
+saved if its last bin falls inside a rendered clip.
 """
 
 import argparse
 import time
-from pathlib import Path
 
 import numpy as np
-import yaml
 
 import video
-from paths import session_paths
+from paths import load_params, session_paths
 
 parser = argparse.ArgumentParser(
     description='Sweep the session and build clips. With --end, only clips '
@@ -42,7 +46,7 @@ parser.add_argument('--end', type=float, default=None,
                          'after this are skipped (default: whole session)')
 args = parser.parse_args()
 
-params = yaml.safe_load(Path('parameters.yaml').read_text())
+params = load_params()
 PATHS = session_paths(params)
 
 # The session's own length, read off the last bin rather than written down, so
@@ -69,15 +73,16 @@ CLIP_DIR = PATHS.clip_dir / f'full_session_{CLIP_S}'
 session = video.load_session(params)
 video.write_interactive_plots(session)
 
-CLIP_DIR.mkdir(parents=True, exist_ok=True)
-print(f'writing clips to {CLIP_DIR}')
-
 # Back-to-back clips of CLIP_S seconds, tiling the whole session. The last one
 # runs past the end of the session; its frames there hold on the final bin.
-for start_time in range(0, round(BIN_TIMES[-1]), CLIP_S):
-    if args.end is not None and start_time >= args.end:
-        continue
+starts = [start for start in range(0, round(BIN_TIMES[-1]), CLIP_S)
+          if args.end is None or start < args.end]
 
+CLIP_DIR.mkdir(parents=True, exist_ok=True)
+print(f'writing {len(starts)} clips to {CLIP_DIR}')
+
+sweep_started = time.perf_counter()
+for done, start_time in enumerate(starts, start=1):
     session.cfg['start_time_s'] = start_time
     session.cfg['duration_s'] = CLIP_S
 
@@ -85,6 +90,12 @@ for start_time in range(0, round(BIN_TIMES[-1]), CLIP_S):
     video.write_video(session, CLIP_DIR / f'{start_time}s.mp4')
     elapsed = time.perf_counter() - started
 
-    frames = round(CLIP_S * session.cfg['fps'])
-    print(f'  took {elapsed:.1f} s for {frames} frames '
-          f'({frames / elapsed:.0f} a second)')
+    frames = round(CLIP_S * video.frame_rate(session.bins))
+    running = time.perf_counter() - sweep_started
+    average = running / done
+    print(f'  [{done}/{len(starts)}] {start_time}s took {elapsed:.1f} s for '
+          f'{frames} frames ({frames / elapsed:.0f} a second) | '
+          f'{running / 60:.1f} min so far, {average:.1f} s per video on average, '
+          f'~{average * (len(starts) - done) / 60:.0f} min left', flush=True)
+
+print(f'sweep took {(time.perf_counter() - sweep_started) / 60:.1f} min')

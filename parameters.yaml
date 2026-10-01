@@ -1,14 +1,18 @@
-# 17/05/2026
-data_file: reduced_np_data_17_05_2026.mat
-maze_png: NPC4_2026_05_17_17_10_50_blackout.png
-
-# 18/05/2026
-# data_file: reduced_np_18_05_2025.mat
-# maze_png: NPC4_2026_05_18_18_11_03_blackout.png
-
-# 25/05/2026
-# data_file: reduced_np_data_25_05_2026.mat
-# maze_png: NPC4_2026_05_25_15_42_57_blackout.png
+# Every recording, by name, each with its data file and its maze's blackout
+# frame. python pipeline.py runs every session listed here, one at a time, so
+# comment a session's three lines out to skip it. A script run by hand, outside
+# the pipeline, runs the first one listed. Names start with a letter, because
+# MATLAB reads them as struct field names.
+sessions:
+  # may_17:
+  #   data_file: reduced_np_data_17_05_2026.mat
+  #   maze_png: NPC4_2026_05_17_17_10_50_blackout.png
+  may_18:
+    data_file: reduced_np_18_05_2025.mat
+    maze_png: NPC4_2026_05_18_18_11_03_blackout.png
+  # may_25:
+  #   data_file: reduced_np_data_25_05_2026.mat
+  #   maze_png: NPC4_2026_05_25_15_42_57_blackout.png
 
 bin_size_ms: 100
 sigma_bins: 2
@@ -30,7 +34,6 @@ port_colors:
 vid:
   start_time_s: 4731.2
   duration_s: 60
-  fps: 30
   full_camera:
     x: -1.910
     y: 0.794

@@ -11,6 +11,11 @@ paths.py. No plotting: this only produces the embeddings.
     umap_block_<N>_all.npy     (n_kept, n_components)   block_id == N
     umap_decision_region.npy   (n_kept, n_components)   in_decision_region
 
+and, for every embedding the video shows other than the full one, every bin it
+was not fitted on placed into it with UMAP.transform:
+
+    umap_<name>_transformed.npy  (n_bins, n_components)  NaN on the fitted bins
+
 Every selection is made from three per-bin columns, correct.csv and rewarded.csv
 (0/1, combined here into correct_rewarded) and block_id.csv (the block each bin falls in, the gaps between trials
 included) -- see selections(). A masked embedding's row i is the i-th True
@@ -31,11 +36,10 @@ import joblib
 import numpy as np
 import pandas as pd
 import umap
-import yaml
 
-from paths import session_paths
+from paths import load_params, session_paths
 
-PATHS = session_paths(yaml.safe_load(Path('parameters.yaml').read_text()))
+PATHS = session_paths(load_params())
 LABEL_DIR = PATHS.label_dir
 OUT_DIR = PATHS.emb_dir
 CACHE_DIR = Path('.cache')
@@ -142,11 +146,8 @@ def selections(n_bins):
     return found
 
 
-def model_for(rows, key_source):
-    """The UMAP fitted on these rows, reused from the cache if it holds one.
-
-    The whole fitted object is cached, so its embedding_ is the embedding and
-    its transform places bins it was not fitted on into that same space.
+def fit_key(key_source):
+    """The cache key for a fit: its rows' identity plus every UMAP parameter.
 
     The key covers the spikes file's contents, which rows were selected (the
     mask's digest, or the word 'full'), and every UMAP parameter. A re-export,
@@ -155,9 +156,17 @@ def model_for(rows, key_source):
     content-addressed, so selections never collide with each other or with any
     other script sharing .cache/.
     """
-    key = hashlib.sha256(
+    return hashlib.sha256(
         (key_source + repr(sorted(UMAP_PARAMS.items()))).encode()
     ).hexdigest()[:16]
+
+
+def model_for(rows, key):
+    """The UMAP fitted on these rows, reused from the cache if it holds one.
+
+    The whole fitted object is cached, so its embedding_ is the embedding and
+    its transform places bins it was not fitted on into that same space.
+    """
     cache_path = CACHE_DIR / f'umap_{key}.joblib'
 
     if cache_path.exists():
@@ -171,6 +180,39 @@ def model_for(rows, key_source):
     joblib.dump(model, cache_path)
     print(f'  cached fit: {cache_path}')
     return model
+
+
+def transformed_for(model, rows, key):
+    """These rows placed into the model's embedding, reused from the cache if held.
+
+    Keyed on the fit's own key: the fit fixes both the model and, through its
+    mask, exactly which rows are left out to be transformed. Cached for the
+    same reason the fits are -- UMAP is not seeded, so a fresh transform would
+    put every trajectory somewhere slightly different on each run.
+    """
+    cache_path = CACHE_DIR / f'umap_{key}_transformed.npy'
+
+    if cache_path.exists():
+        print(f'  reusing cached transform: {cache_path}')
+        return np.load(cache_path)
+
+    print(f'  no cached transform — placing {rows.shape[0]} left-out bins...')
+    placed = model.transform(rows)
+
+    CACHE_DIR.mkdir(exist_ok=True)
+    np.save(cache_path, placed)
+    print(f'  cached transform: {cache_path}')
+    return placed
+
+
+def wants_transform(name):
+    """Whether the video needs this embedding's left-out bins placed into it.
+
+    Not the full embedding, which leaves nothing out, nor a block's correct
+    rewarded one, which no panel shows; a transform of 20,000-odd bins is not
+    free.
+    """
+    return name != 'full' and not name.endswith('_cr')
 
 
 spikes, spikes_digest = load_spikes()
@@ -191,8 +233,22 @@ for name, mask, selector in targets:
         print(f'  only {n_selected} bins — skipping, need at least {MIN_BINS}')
         continue
 
-    embedding = model_for(spikes[mask], spikes_digest + selector).embedding_
+    key = fit_key(spikes_digest + selector)
+    model = model_for(spikes[mask], key)
+    embedding = model.embedding_
 
     out_path = OUT_DIR / f'umap_{name}.npy'
     np.save(out_path, embedding)
     print(f'  wrote {out_path}  {embedding.shape}')
+
+    if not wants_transform(name):
+        continue
+
+    # One row per bin, so the video looks a bin up directly; the fitted bins
+    # are NaN here, since their place is the embedding itself.
+    transformed = np.full((n_bins, embedding.shape[1]), np.nan)
+    transformed[~mask] = transformed_for(model, spikes[~mask], key)
+
+    out_path = OUT_DIR / f'umap_{name}_transformed.npy'
+    np.save(out_path, transformed)
+    print(f'  wrote {out_path}  {int((~mask).sum())} bins placed')
